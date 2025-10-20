@@ -29,7 +29,13 @@ if __name__ == "__main__":
     "box_scale": 0.8,
     "fov_size": 5})
 
-    size = int(15)
+    agents.append({"name": "gamma",
+    "color": [255, 200, 20],
+    "outline_width": 2,
+    "box_scale": 0.8,
+    "fov_size": 5})
+
+    size = int(10)
     record = False
 
     # Ensure video folder exists
@@ -67,24 +73,24 @@ if __name__ == "__main__":
     else:
         base_env = env
 
-    obs, info = env.reset()
+    env.reset()
     
     
-    print("Agents:", base_env.agents)
-    print("Action space:", base_env.action_space)
-    print("Observation space:", base_env.observation_space)
-    print("Initial Observation:", obs)
+    print("Possible agents:", base_env.possible_agents)
+    print("Action spaces:", base_env.action_spaces)
+    print("Observation spaces:", base_env.observation_spaces)
     
     # Print observation space in a nice ASCII format
     print("\n" + "="*80)
     print("OBSERVATION SPACE DETAILS".center(80))
     print("="*80)
     
-    for agent_name in base_env.agents:
-        agent_obs_space = base_env.observation_space[agent_name]
+    for agent_name in base_env.possible_agents:
+        agent_obs_space = base_env.observation_spaces[agent_name]
         print(f"\n┌─ {agent_name.upper()} AGENT OBSERVATION SPACE ─┐")
         print(f"│ Agent Position: {agent_obs_space['agent']}")
-        print(f"│ Target Position: {agent_obs_space['target']}")
+        if 'target' in agent_obs_space:
+            print(f"│ Target Position: {agent_obs_space['target']}")
         print(f"│ FOV Obstacles:   {agent_obs_space['obstacles_fov']}")
         print("└" + "─" * 40 + "┘")
     
@@ -92,33 +98,31 @@ if __name__ == "__main__":
     
     # Print FOV for each agent (only if FOV display is enabled)
     if base_env.show_fov_display:
-        for agent_name in base_env.agents:
+        for agent_name in base_env.possible_agents:
+            obs = base_env.observe(agent_name)
             print(f"\n{agent_name} FOV obstacles:")
-            print(obs[agent_name]['obstacles_fov'])
+            print(obs['obstacles_fov'])
 
-    done = False
     step_idx = 0
     
-    agent_cycle = iter(base_env.agents)
-    while not done and step_idx < 500:
+    # Use AEC agent_iter() pattern
+    for agent in env.agent_iter():
         step_idx += 1
-
-        try:
-            current_agent = next(agent_cycle)
-        except StopIteration:
-            # Restart the cycle if at end
-            agent_cycle = iter(base_env.agents)
-            current_agent = next(agent_cycle)
         
-        action = base_env.action_space[current_agent].sample()
-        step_action = {"agent": current_agent, "action": action}
-        obs, reward, terminated, truncated, info = env.step(step_action)
-        print(f"Agent {current_agent}, Action: {action}, Reward: {reward}")
+        observation, reward, termination, truncation, info = env.last()
         
-        if terminated or truncated:
-            done = True
+        if termination or truncation:
+            action = None
+        else:
+            action = env.action_spaces[agent].sample()
+            
+        env.step(action)
+        
+        print(f"Step {step_idx}, Agent {agent}, Action: {action}, Reward: {reward}")
+        
+        if step_idx >= 500:
             break
-
+            
         time.sleep(0.2)
 
     env.close()

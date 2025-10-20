@@ -6,6 +6,8 @@ import pygame
 import gymnasium as gym
 from gymnasium import spaces
 from gymnasium.wrappers import FlattenObservation
+from pettingzoo import AECEnv
+from pettingzoo.utils import AgentSelector
 
 from typing import Optional, List, Dict, Union
 
@@ -24,27 +26,53 @@ class Actions(Enum):
     DOWN = 3
     NO_OP = 4
 
-class GridWorldEnvMultiAgent(gym.Env):
+class GridWorldEnvMultiAgent(AECEnv):
+    ''' A multi-agent grid world environment where agents navigate to find a target while avoiding obstacles.
+    
+    This environment follows the PettingZoo AEC (Agent-Environment-Cycle) interface, where agents
+    take turns acting sequentially. Each agent receives individual rewards based on their FOV detection.
+    
+    Input parameters:
+     - size: The size of the grid (size x size)
+     - max_steps: Maximum steps per episode
+     - render_mode: Rendering mode ("human", "rgb_array", or None)
+     - show_fov_display: Whether to display agent FOVs in human render mode
+     - intrinsic: Whether to use intrinsic exploration rewards
+     - lambda_fov: Weighting factor for FOV-based rewards (0 to 1)
+     - show_target_coords: Whether agents can see target coordinates in their observations
+     - no_target: If True, no target is spawned
+     - agents: List of agent configurations or Agent instances
+     - target_config: Configuration dictionary for the target
+     - enable_obstacles: Whether to enable obstacles in the environment
+     - num_obstacles: Number of obstacles to generate
+     
+     Agents and Targets can be passed with custom configurations.
+     If none are provided, 2 default agents and one target will be created.'''
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 5}
 
     def __init__(
         self,
-        render_mode=None,
+
+        # General settings
         size=5,
+        max_steps: int = 500,
+        render_mode=None,
+        show_fov_display: bool = True,
+
+        # Rewards and target settings
         intrinsic=False,
+        lambda_fov: float = 0.5,
+        show_target_coords: bool = False,
+
+        # Agents and target settings
         no_target=False,
-        agent_outline_width=1,
-        agent_box_scale=1.0,
-        agent_fov_size=1,
         agents: Optional[List[Union[Dict, 'Agent']]] = None,
+        target_config: Optional[Dict] = None,
+
+        # Obstacles
         enable_obstacles: bool = False,
         num_obstacles: int = 0,
-        num_default_agents: int = 2,
-        show_fov_display: bool = True,
-        target_config: Optional[Dict] = None,
-        lambda_fov: float = 0.5,
-        max_steps: int = 500,
-        show_target_coords: bool = False,
+
     ):
         self.size = size  # The size of the square grid (default to 5x5)
         self.window_size = 512  # The size of the PyGame window
@@ -58,54 +86,66 @@ class GridWorldEnvMultiAgent(gym.Env):
         # FOV display state
         self._step_count = 0
         self.max_steps = max_steps
+
         # Detection state tracking for visual indicators
         self._agent_detects_target = {}  # Track which agents detect the target
         self._target_detects_agent = {}  # Track which agents the target detects
-        # Back-compat defaults for per-agent visual params
-        default_outline_width = int(agent_outline_width)
-        default_box_scale = float(agent_box_scale)
-        default_fov_size = int(agent_fov_size if agent_fov_size % 2 == 1 else agent_fov_size + 1)
+
+        # Back-compat defaults for per-agent visual params NOTE Remove ? I dont need backward compatibility
+        default_outline_width = int(1)
+        default_box_scale = float(0.8)
+        default_fov_size = int(1)
 
         # Build agents list (support custom configs)
         default_colors = [(80, 160, 255), (255, 180, 60)]
         self.agent_list: List[Agent] = []
+
         if agents is None:
             # Auto-generate N default agents
-            count = max(1, int(num_default_agents))
+            count = 2 # num_default_agents
             self.agent_list = []
             for i in range(count):
                 name = f"agent_{i+1}"
                 color = default_colors[i % len(default_colors)]
                 agent = Agent(self.size, name, color, None, default_outline_width, default_box_scale, default_fov_size, self.show_target_coords)
                 self.agent_list.append(agent)
+
         else:
             self.agent_list = []
             for idx, cfg in enumerate(agents):
-                if isinstance(cfg, Agent):
-                    # Use provided Agent instance as-is
-                    self.agent_list.append(cfg)
-                    continue
-                # Otherwise treat as config dict
                 name = cfg.get("name", f"agent_{idx+1}")
                 color = cfg.get("color", default_colors[idx % len(default_colors)])
-                act_space = cfg.get("action_space", spaces.Discrete(5))
                 outline_width = int(cfg.get("outline_width", default_outline_width))
                 box_scale = float(cfg.get("box_scale", default_box_scale))
                 fov_size = int(cfg.get("fov_size", default_fov_size))
                 
-                agent = Agent(self.size, name, color, None, outline_width, box_scale, fov_size, self.show_target_coords)
+                agent = Agent(self.size, name, color, outline_width, box_scale, fov_size, self.show_target_coords)
                 self.agent_list.append(agent)
 
         # Public names and lookup
         self.agents: List[str] = [a.name for a in self.agent_list]
         self._agents_by_name: Dict[str, Agent] = {a.name: a for a in self.agent_list}
 
-        # Combined spaces from agents
-        self.action_space = spaces.Dict({a.name: a.action_space for a in self.agent_list})
-        self.observation_space = spaces.Dict({a.name: a.observation_space for a in self.agent_list})
+        # AEC required properties
+        self.possible_agents = self.agents.copy()
+        self.agent_selection = self.possible_agents[0] if self.possible_agents else None
+        self.rewards = {agent: 0 for agent in self.possible_agents}
+        self.terminations = {agent: False for agent in self.possible_agents}
+        self.truncations = {agent: False for agent in self.possible_agents}
+        self.infos = {agent: {} for agent in self.possible_agents}
+        self._cumulative_rewards = {agent: 0 for agent in self.possible_agents}
+
+        # Per-agent spaces (AEC format)
+        self.action_spaces = {a.name: a.action_space for a in self.agent_list}
+        self.observation_spaces = {a.name: a.observation_space for a in self.agent_list}
+        
+        # AEC properties for compatibility
+        self.action_space = self.action_spaces
+        self.observation_space = self.observation_spaces
 
         # Target location
         self._target_location = np.array([-1, -1], dtype=int)
+
         # Obstacles: list of (x, y, w, h) in cell units
         self._obstacles: List[tuple] = []
 
@@ -127,7 +167,7 @@ class GridWorldEnvMultiAgent(gym.Env):
 
         # Initialize target
         if not self.no_target:
-            if target_config is None:
+            if target_config is None: # If no target config is provided, use default values
                 target_config = {}
             self.target = Target(
                 name=target_config.get('name', 'target'),
@@ -141,39 +181,52 @@ class GridWorldEnvMultiAgent(gym.Env):
                 box_scale=target_config.get('box_scale', 1.0)
             )
         else:
-            self.target = None
+            self.target = None # If no target is needed, set target to None
 
         self.window = None
         self.clock = None
         self.step_counter = 0
 
-    def _get_obs(self):
-        obs = {}
-        for a in self.agent_list:
-            fov_obstacles = self._get_agent_fov_obstacles(a)
-            agent_obs = {
-                "agent": a.location, 
-                "obstacles_fov": fov_obstacles
-            }
-            
-            # Only include target coordinates if show_target_coords is True
-            if self.show_target_coords:
-                agent_obs["target"] = self.target.location if self.target is not None else np.array([-1, -1])
-            
-            obs[a.name] = agent_obs
-        return obs
 
     def _get_info(self):
+        '''
+        Returns:
+            dict: Distance between each agent and the target
+        '''
         info = {}
         for a in self.agent_list:
             if self.target is not None:
                 info[f"distance_{a.name}"] = np.linalg.norm(a.location - self.target.location, ord=1)
             else:
-                info[f"distance_{a.name}"] = -1
+                info[f"distance_{a.name}"] = -1 # If no target is needed, set distance to -1
         return info
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
-        super().reset(seed=seed)
+        '''
+        Resets the environment to a new state.
+
+        Args:
+            seed: Optional seed for the random number generator
+            options: Optional dictionary of options
+
+        Returns:
+            None (AEC reset returns None)
+        '''
+        # Initialize random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+
+        # Initialize AEC state
+        self.agents = self.possible_agents.copy()
+        self.rewards = {agent: 0 for agent in self.possible_agents}
+        self.terminations = {agent: False for agent in self.possible_agents}
+        self.truncations = {agent: False for agent in self.possible_agents}
+        self.infos = {agent: {} for agent in self.possible_agents}
+        self._cumulative_rewards = {agent: 0 for agent in self.possible_agents}
+        
+        # Initialize agent selector for cycling through agents
+        self._agent_selector = AgentSelector(self.possible_agents)
+        self.agent_selection = self._agent_selector.next()
 
         # Optionally generate new obstacles each reset
         self._obstacles = []
@@ -184,37 +237,31 @@ class GridWorldEnvMultiAgent(gym.Env):
         forbidden = self._cells_covered_by_obstacles()
         choices = [i for i in range(self.size * self.size) if (i // self.size, i % self.size) not in forbidden]
         num_needed = len(self.agent_list) + (0 if self.no_target else 1)
+        
         if len(choices) < num_needed:
             # fallback: ignore obstacles if too dense
-            coords = self.np_random.choice(self.size * self.size, size=num_needed, replace=False)
+            coords = np.random.choice(self.size * self.size, size=num_needed, replace=False)
         else:
-            coords = self.np_random.choice(choices, size=num_needed, replace=False)
+            coords = np.random.choice(choices, size=num_needed, replace=False)
 
         for i, a in enumerate(self.agent_list):
             self._update_agent_location(a, np.array([coords[i] // self.size, coords[i] % self.size], dtype=int))
         
-        if self.no_target:
-            if self.target is not None:
-                self.target = None
-        else:
-            if self.target is None:
-                # Create target if it doesn't exist
-                self.target = Target(
-                    name='target',
-                    color=(255, 0, 0),
-                    size=self.size,
-                    movement_speed=0.3,
-                    movement_range=1,
-                    smooth_movement=True,
-                    box_cells=3,
-                    outline_width=2,
-                    box_scale=1.0
-                )
-            t_idx = len(self.agent_list)
-            target_position = (coords[t_idx] // self.size, coords[t_idx] % self.size)
-            self.target.reset(target_position)
+        # The target should already be initialized in __init__, just reset it if needed
+        # This code initializes or resets the target object's location at the start of an environment episode.
+        # If the environment is configured to have no target (self.no_target is True), set self.target to None.
+        # Otherwise, compute a new start position for the target (ensuring it is not placed on an obstacle),
+        # and reset (move) the target to that position if the target object exists.
 
-        if self.intrinsic:
+        if self.no_target:
+            self.target = None
+        else:
+            t_idx = len(self.agent_list)  # The index after all agents (since coords = [agents..., target])
+            target_position = (coords[t_idx] // self.size, coords[t_idx] % self.size)  # Get target cell coordinates
+            if self.target is not None:             # If the target object exists, reset it to the new position (ensuring it is not placed on an obstacle)
+                self.target.reset(target_position)  # Move target to new position, the target object has its own reset method.
+
+        if self.intrinsic: # Counting visits to cells if intrinsic exploration is enabled
             for a in self.agent_list:
                 self._visit_counts[a.name].fill(0)
                 self._visit_counts[a.name][tuple(a.location)] += 1
@@ -224,163 +271,173 @@ class GridWorldEnvMultiAgent(gym.Env):
         if self.render_mode == "human":
             self._render_frame()
 
-        return self._get_obs(), self._get_info()
+    def observe(self, agent: str):
+        '''
+        Returns observation for a single agent.
+        
+        Args:
+            agent: The name of the agent to observe
+            
+        Returns:
+            dict: Observation containing agent location, FOV obstacles, and optionally target location
+        '''
+        if agent not in self._agents_by_name:
+            raise ValueError(f"Agent {agent} not found")
+            
+        agent_obj = self._agents_by_name[agent]
+        fov_obstacles = self._get_agent_fov_obstacles(agent_obj)
+        
+        obs = {
+            "agent": agent_obj.location,
+            "obstacles_fov": fov_obstacles
+        }
+        
+        # Only include target coordinates if show_target_coords is True
+        if self.show_target_coords and self.target is not None:
+            obs["target"] = self.target.location
+        elif self.show_target_coords:
+            obs["target"] = np.array([-1, -1])
+            
+        return obs
+
+    def last(self):
+        '''
+        Returns the observation, reward, termination, truncation, and info for the current agent.
+        
+        Returns:
+            tuple: (observation, reward, termination, truncation, info) for agent_selection
+        '''
+        agent = self.agent_selection
+        if agent is None:
+            return None, None, None, None, None
+            
+        observation = self.observe(agent)
+        reward = self.rewards[agent]
+        termination = self.terminations[agent]
+        truncation = self.truncations[agent]
+        
+        # Get info for this specific agent
+        info = {}
+        if self.target is not None:
+            agent_obj = self._agents_by_name[agent]
+            info[f"distance_{agent}"] = np.linalg.norm(agent_obj.location - self.target.location, ord=1)
+        else:
+            info[f"distance_{agent}"] = -1
+            
+        return observation, reward, termination, truncation, info
 
     def step(self, action):
         """
-        Supports two modes:
-        - Batch step for both agents in one call: action = {"agent_1": a1, "agent_2": a2}
-        - Single-agent step: action = {"agent": "agent_1"|"agent_2"|0|1, "action": a}
-          or a tuple/list (agent_id, a) where agent_id is "agent_1"/"agent_2" or 0/1.
+        AEC step method - takes action for current agent and advances to next agent.
+        
+        Args:
+            action: Integer action (0-4) for the current agent
+            
+        Returns:
+            None (AEC step returns None)
         """
+        if action is None:
+            # Handle agent termination/truncation
+            self._accumulate_rewards()
+            self.agent_selection = self._agent_selector.next()
+            return
+            
+        agent = self.agent_selection
+        if agent is None:
+            return
+            
         self.step_counter += 1
         self._step_count += 1
         
         # Clear screen and show step info if FOV display is enabled
         self._clear_screen_and_show_step()
 
-        # Helper to normalize agent identifier to key string
-        def _normalize_agent_key(agent_identifier: Union[str, int, np.integer]) -> str:
-            if isinstance(agent_identifier, str):
-                if agent_identifier in self._agents_by_name:
-                    return agent_identifier
-            elif isinstance(agent_identifier, (int, np.integer)):
-                idx = int(agent_identifier)
-                if 0 <= idx < len(self.agent_list):
-                    return self.agent_list[idx].name
-            raise ValueError("Invalid agent identifier. Use valid agent name or index.")
-
-        # Case 1: batch two-agent action dict
-        if isinstance(action, dict) and all(name in action for name in self.agents):
-            # batch actions for all agents
-            proposed: Dict[str, np.ndarray] = {}
-            for name in self.agents:
-                a_val = int(action[name])  # type: ignore[index]
-                direction = self._action_to_direction[a_val]
-                current = self._agents_by_name[name].location
-                candidate = np.clip(current + direction, 0, self.size - 1)
-                # block if obstacle cell
-                if self._is_cell_obstacle(candidate):
-                    candidate = current
-                proposed[name] = candidate
-
-            # resolve collisions simply: later agents can't move into occupied cells
-            occupied = set()
-            for name in self.agents:
-                target_loc = proposed[name]
-                key = (int(target_loc[0]), int(target_loc[1]))
-                if key in occupied:
-                    continue
-                # also avoid moving into someone who isn't moving
-                can_move = True
-                for other_name in self.agents:
-                    if other_name == name:
-                        continue
-                    other = self._agents_by_name[other_name]
-                    other_prop = proposed.get(other_name, other.location)
-                    if np.array_equal(target_loc, other.location) and np.array_equal(other_prop, other.location):
-                        can_move = False
-                        break
-                if can_move:
-                    self._update_agent_location(self._agents_by_name[name], target_loc)
-                    occupied.add(key)
+        # Move the current agent
+        direction = self._action_to_direction[int(action)]
+        agent_obj = self._agents_by_name[agent]
+        proposed_loc = np.clip(agent_obj.location + direction, 0, self.size - 1)
+        
+        # Block obstacles
+        if self._is_cell_obstacle(proposed_loc):
+            proposed_loc = agent_obj.location
             
-            # Show FOV for ALL agents after batch processing
-            if self.show_fov_display:
-                for name in self.agents:
-                    fov_map = self._get_agent_fov_obstacles(self._agents_by_name[name])
-                    self._print_fov_display(name, fov_map, f"(action {action[name]})")
-
-        else:
-            # Case 2: single-agent action
-            if isinstance(action, dict) and "agent" in action and "action" in action:
-                agent_key = _normalize_agent_key(action["agent"])  # type: ignore[index]
-                a = int(action["action"])  # type: ignore[index]
-            elif isinstance(action, (list, tuple)) and len(action) == 2:
-                agent_key = _normalize_agent_key(action[0])
-                a = int(action[1])
-            else:
-                raise ValueError(
-                    "Unsupported action format. Use {agent_1:a1, agent_2:a2} or {agent: id, action: a} or (id, a)."
-                )
-
-            direction = self._action_to_direction[a]
-            agent = self._agents_by_name[agent_key]
-            proposed_loc = np.clip(agent.location + direction, 0, self.size - 1)
-            # Block obstacles
-            if self._is_cell_obstacle(proposed_loc):
-                proposed_loc = agent.location
-            blocked = any(np.array_equal(proposed_loc, other.location) for other in self.agent_list if other.name != agent_key)
-            if not blocked:
-                self._update_agent_location(agent, proposed_loc)
-            
-            # Show FOV for this agent if display is enabled (regardless of movement)
-            if self.show_fov_display:
-                fov_map = self._get_agent_fov_obstacles(agent)
-                self._print_fov_display(agent_key, fov_map, f"(action {a})")
+        # Block collisions with other agents
+        blocked = any(np.array_equal(proposed_loc, other.location) for other in self.agent_list if other.name != agent)
+        if not blocked:
+            self._update_agent_location(agent_obj, proposed_loc)
+        
+        # Show FOV for this agent if display is enabled
+        if self.show_fov_display:
+            fov_map = self._get_agent_fov_obstacles(agent_obj)
+            self._print_fov_display(agent, fov_map, f"(action {action})")
 
         # Move target if it exists
         if self.target is not None:
             self.target.step(self.step_counter, self._obstacles, self._is_cell_obstacle)
         
-        # FOV-based reward system
+        # Calculate individual reward for this agent
         reward = 0.0
         
         # Update detection state for visual indicators
         self._agent_detects_target = {}
         self._target_detects_agent = {}
         
-        # Check if any agent reached the target (termination condition)
-        reached_any = False
+        # Check if this agent reached the target (termination condition)
+        reached_target = False
         if not self.no_target and self.target is not None:
-            reached_any = any(np.array_equal(a.location, self.target.location) for a in self.agent_list)
+            reached_target = np.array_equal(agent_obj.location, self.target.location)
         
-        if reached_any:
-            reward = 0.0  # Success reward
+        if reached_target:
+            reward = 1.0  # Success reward
         else:
-            # Apply FOV-based rewards for each agent and track detection
-            for agent in self.agent_list:
-                # Check if agent detects target
-                agent_detects = self._is_target_in_agent_fov(agent)
-                self._agent_detects_target[agent.name] = agent_detects
-                
-                # Check if target detects agent
-                target_detects = self._is_agent_in_target_fov(agent)
-                self._target_detects_agent[agent.name] = target_detects
-                
-                # Penalty: -lambda if agent is in target's FOV
-                # If lambda is 1, the agent only cares about avoiding the target
-                if target_detects:
-                    reward -= (self.lambda_fov)
-
-                # Reward: (1-lambda) if target is in agent's FOV
-                # If lambda is 0, the agent only cares about finding the target
-                elif agent_detects:
-                    reward += (1-self.lambda_fov)
-                
+            # Check if this agent detects target
+            agent_detects = self._is_target_in_agent_fov(agent_obj)
+            self._agent_detects_target[agent] = agent_detects
             
-            # Add small step penalty if no FOV interactions
-            if reward == 0.0:
+            # Check if target detects this agent
+            target_detects = self._is_agent_in_target_fov(agent_obj)
+            self._target_detects_agent[agent] = target_detects
+            
+            # Penalty: -lambda if agent is in target's FOV
+            if target_detects:
+                reward -= self.lambda_fov
+            # Reward: (1-lambda) if target is in agent's FOV
+            elif agent_detects:
+                reward += (1 - self.lambda_fov)
+            else:
+                # Small step penalty if no detection
                 reward = -0.01
 
         # Intrinsic exploration rewards (if enabled)
         if self.intrinsic:
-            for a in self.agent_list:
-                if self._visit_counts[a.name][tuple(a.location)] == 0:
-                    reward += 0.025
-                self._visit_counts[a.name][tuple(a.location)] += 1
+            if self._visit_counts[agent][tuple(agent_obj.location)] == 0:
+                reward += 0.025
+            self._visit_counts[agent][tuple(agent_obj.location)] += 1
 
-        # terminated = reached_any
-        terminated = False # no termination condition
-        truncated = self.step_counter >= self.max_steps
-
-        # Store last reward for display
+        # Store reward for this agent
+        self.rewards[agent] = reward
+        self._cumulative_rewards[agent] += reward
+        
+        # Store last agent and reward for rendering
+        self._last_agent = agent
         self._last_reward = reward
+        
+        # Check termination/truncation for this agent
+        self.terminations[agent] = reached_target
+        self.truncations[agent] = self.step_counter >= self.max_steps
+
+        # Advance to next agent
+        self._accumulate_rewards()
+        self.agent_selection = self._agent_selector.next()
 
         if self.render_mode == "human":
             self._render_frame()
 
-        return self._get_obs(), reward, terminated, truncated, self._get_info()
+    def _accumulate_rewards(self):
+        """Accumulate rewards for the current agent."""
+        agent = self.agent_selection
+        if agent is not None:
+            self._cumulative_rewards[agent] += self.rewards[agent]
 
     def close(self):
         if self.window is not None:
@@ -481,6 +538,16 @@ class GridWorldEnvMultiAgent(gym.Env):
 
         for a in self.agent_list:
             draw_agent_box(a)
+        
+        # Draw halos around agents that see other agents in their FOV
+        for a in self.agent_list:
+            fov_map = self._get_agent_fov_obstacles(a)
+            if np.any(fov_map == 2):  # Check if agent sees other agents (value 2)
+                # Draw a halo around the agent
+                center_x = (a.location[0] + 0.5) * pix_square
+                center_y = (a.location[1] + 0.5) * pix_square
+                halo_radius = pix_square * 0.6  # Slightly larger than agent box
+                pygame.draw.circle(canvas, a.color, (int(center_x), int(center_y)), int(halo_radius), width=3)
             
         # Draw lines through last 3 visited cells for each agent
         for a in self.agent_list:
@@ -536,8 +603,11 @@ class GridWorldEnvMultiAgent(gym.Env):
         
         # Only render text if fonts are available
         if font_large is not None and font_medium is not None and font_small is not None:
-            # Step counter
-            step_text = font_large.render(f"Step: {self.step_counter}", True, TEXT_COLOR)
+            # Step counter and current agent
+            current_agent_text = f"Step: {self.step_counter}"
+            if hasattr(self, 'agent_selection') and self.agent_selection is not None:
+                current_agent_text += f" | Current: {self.agent_selection}"
+            step_text = font_large.render(current_agent_text, True, TEXT_COLOR)
             canvas.blit(step_text, (10, info_panel_y + 10))
             
             # Agent information
@@ -555,7 +625,10 @@ class GridWorldEnvMultiAgent(gym.Env):
                 canvas.blit(target_text, (10, y_offset + len(self.agent_list) * 20))
             
             # Reward information (if available from last step)
-            if hasattr(self, '_last_reward'):
+            if hasattr(self, '_last_reward') and hasattr(self, '_last_agent'):
+                reward_text = font_medium.render(f"Last Reward ({self._last_agent}): {self._last_reward:.3f}", True, TEXT_COLOR)
+                canvas.blit(reward_text, (self.window_size - 200, info_panel_y + 10))
+            elif hasattr(self, '_last_reward'):
                 reward_text = font_medium.render(f"Last Reward: {self._last_reward:.3f}", True, TEXT_COLOR)
                 canvas.blit(reward_text, (self.window_size - 200, info_panel_y + 10))
             
@@ -803,14 +876,14 @@ class GridWorldEnvMultiAgent(gym.Env):
         while created < count and attempts < max_attempts:
             attempts += 1
             # Random top-left
-            ox = int(self.np_random.integers(0, self.size))
-            oy = int(self.np_random.integers(0, self.size))
+            ox = int(np.random.randint(0, self.size))
+            oy = int(np.random.randint(0, self.size))
             # Random width/height (at least 1 cell), capped to remain in bounds
             max_w = max(1, self.size - ox)
             max_h = max(1, self.size - oy)
             # Prefer small obstacles
-            ow = int(self.np_random.integers(1, min(4, max_w) + 1))
-            oh = int(self.np_random.integers(1, min(4, max_h) + 1))
+            ow = int(np.random.randint(1, min(4, max_w) + 1))
+            oh = int(np.random.randint(1, min(4, max_h) + 1))
             # Avoid duplicates
             rect = (ox, oy, ow, oh)
             if rect in self._obstacles:
@@ -823,23 +896,21 @@ class GridWorldEnvMultiAgent(gym.Env):
 
 if __name__ == "__main__":
     env = GridWorldEnvMultiAgent(render_mode="human", size=7, intrinsic=True)
-    obs, info = env.reset()
-    done = False
-    total_reward = 0.0
-    print("Initial obs:", obs)
-    print("Action space:", env.action_space)
-    print("Observation space:", env.observation_space)
+    env.reset()
     
-    while not done:
-        # Random actions for both agents
-        action = {
-            "agent_1": env.action_space["agent_1"].sample(),
-            "agent_2": env.action_space["agent_2"].sample(),
-        }
-        obs, reward, terminated, truncated, info = env.step(action)
-        total_reward += reward
-        done = terminated or truncated
+    print("Action spaces:", env.action_spaces)
+    print("Observation spaces:", env.observation_spaces)
+    print("Possible agents:", env.possible_agents)
+    
+    for agent in env.agent_iter():
+        observation, reward, termination, truncation, info = env.last()
+        if termination or truncation:
+            action = None
+        else:
+            action = env.action_spaces[agent].sample()
+        env.step(action)
+    
     env.close()
-    print("Total reward:", total_reward)
+    print("Episode completed!")
 
 

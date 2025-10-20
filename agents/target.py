@@ -2,6 +2,12 @@ import numpy as np
 from typing import Tuple, Optional
 import random
 
+'''
+A target in the grid world environment.
+
+The target is initialized as it's own object for flexibility and additional functionality such that it may 
+adhere to its own movement rules and be rendered differently from the agents.
+'''
 
 class Target:
     """
