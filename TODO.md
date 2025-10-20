@@ -17,6 +17,14 @@
   - Visual indicator to show mutual agent awareness (both agents get halos when they can see each other)
   - Implemented while maintaining AEC compliance
 
+## New Agent Type Development
+- [ ] **Create new branch with different agent type**
+  - New agent will have completely different observation space
+  - Will be looking at a different grid compared to current agents
+  - Need to create new branch for this development
+  - Current agents use FOV-based observation space
+  - New agent type will have alternative grid observation system
+
 ## Future Items
 - [ ] Add more items here as requested...
 
