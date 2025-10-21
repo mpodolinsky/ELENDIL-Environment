@@ -36,6 +36,18 @@
   - Alternative: Should out-of-bounds areas be treated as obstacles (1) instead?
   - Decision needed: How should the ObserverAgent perceive grid boundaries in its large FOV?
 
+
+## Additional notes
+- termination, for now, when one agent reaches the target a terminal state is set. Is this what we want? It would be better to just have an infinite time horizont no? I think that that would be a good idea since otherwise the other agents won't understand although actually they don't have to as long as they aren't punished.
+
+## Line-of-Sight and Vision System
+- [ ] **Implement line-of-sight blocking for physical obstacles**
+  - Currently physical obstacles block movement but don't block vision through them
+  - FOVAgent and ObserverAgent can see targets/agents behind physical obstacles
+  - Should implement proper line-of-sight raycasting so obstacles block vision
+  - This would make the environment more realistic (can't see through walls)
+  - Note: Visual obstacles already hide what's beneath them for ObserverAgent
+
 ## Future Items
 - [ ] Add more items here as requested...
 

@@ -26,15 +26,15 @@ if __name__ == "__main__":
 
     # Create FOVAgent instances instead of dictionary configurations
     agents = [
-        FOVAgent(
-            name=agent_config.get("name", "alpha"),
-            color=tuple(agent_config.get("color", [80, 160, 255])),
-            env_size=10,  # Will be updated with actual size
-            fov_size=agent_config.get("fov_size", 3),
-            outline_width=agent_config.get("outline_width", 1),
-            box_scale=agent_config.get("box_scale", 1.0),
-            show_target_coords=False
-        ),
+        # FOVAgent(
+        #     name=agent_config.get("name", "alpha"),
+        #     color=tuple(agent_config.get("color", [80, 160, 255])),
+        #     env_size=10,  # Will be updated with actual size
+        #     fov_size=agent_config.get("fov_size", 3),
+        #     outline_width=agent_config.get("outline_width", 1),
+        #     box_scale=agent_config.get("box_scale", 1.0),
+        #     show_target_coords=False
+        # ),
         # FOVAgent(
         #     name="beta",
         #     color=(0, 255, 200),
@@ -118,6 +118,7 @@ if __name__ == "__main__":
     no_target=False,
     enable_obstacles=True,
     num_obstacles=3,
+    num_visual_obstacles=2,  # Visual obstacles for ObserverAgent (block view but not movement)
     show_fov_display=True,
     target_config=target_config,
     lambda_fov=0.5)
@@ -140,10 +141,15 @@ if __name__ == "__main__":
 
     env.reset()
     
-    
-    print("Possible agents:", base_env.possible_agents)
-    print("Action spaces:", base_env.action_spaces)
-    print("Observation spaces:", base_env.observation_spaces)
+    print("\n" + "="*80)
+    print("ENVIRONMENT SETUP".center(80))
+    print("="*80)
+    print(f"Grid size: {base_env.size}x{base_env.size}")
+    print(f"Physical obstacles: {len(base_env._obstacles)} (block movement)")
+    print(f"Visual obstacles: {len(base_env._visual_obstacles)} (block ObserverAgent view only)")
+    print(f"Possible agents: {base_env.possible_agents}")
+    print(f"Action spaces: {base_env.action_spaces}")
+    print(f"Observation spaces: {base_env.observation_spaces}")
     
     # Print observation space in a nice ASCII format
     print("\n" + "="*80)
@@ -152,14 +158,31 @@ if __name__ == "__main__":
     
     for agent_name in base_env.possible_agents:
         agent_obs_space = base_env.observation_spaces[agent_name]
+        agent_obj = base_env._agents_by_name[agent_name]
+        
         print(f"\n┌─ {agent_name.upper()} AGENT OBSERVATION SPACE ─┐")
         print(f"│ Agent Position: {agent_obs_space['agent']}")
         if 'target' in agent_obs_space:
             print(f"│ Target Position: {agent_obs_space['target']}")
         print(f"│ FOV Obstacles:   {agent_obs_space['obstacles_fov']}")
+        
+        # Show flight level for ObserverAgent
+        if isinstance(agent_obj, ObserverAgent):
+            print(f"│ Flight Level:    {agent_obs_space['flight_level']}")
+        
         print("└" + "─" * 40 + "┘")
     
+    # Print FOV encoding legend
     print("\n" + "="*80)
+    print("FOV ENCODING LEGEND".center(80))
+    print("="*80)
+    print("  -10 = Masked area (ObserverAgent flight level masking)")
+    print("   0  = Empty space")
+    print("   1  = Physical obstacle (blocks movement)")
+    print("   2  = Other agent")
+    print("   3  = Target")
+    print("   4  = Visual obstacle (blocks ObserverAgent view, not movement)")
+    print("="*80)
     
     # Print FOV for each agent (only if FOV display is enabled)
     if base_env.show_fov_display:
@@ -188,6 +211,6 @@ if __name__ == "__main__":
         if step_idx >= 500:
             break
             
-        time.sleep(0.2)
+        # time.sleep(1)
 
     env.close()

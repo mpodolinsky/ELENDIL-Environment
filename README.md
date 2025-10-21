@@ -11,7 +11,9 @@ This environment simulates a grid-based world where multiple agents navigate to 
 ### Environment Features
 - **Multi-Agent Sequential Stepping**: Agents take turns acting using PettingZoo's AEC interface
 - **Dynamic Target Movement**: Moving target that changes position each step
-- **Obstacle Avoidance**: Configurable obstacles that agents must navigate around
+- **Dual Obstacle System**: 
+  - Physical obstacles block agent movement
+  - Visual obstacles block ObserverAgent view but not movement (simulating buildings/cover)
 - **FOV-Based Observations**: Agents see only their local field-of-view, not the entire grid
 - **Individual Rewards**: Each agent receives rewards based on their own FOV detection
 
@@ -53,13 +55,13 @@ Advanced agent with flight level capabilities and expanded FOV:
 - **Observation Space**:
   - Agent position (x, y coordinates)
   - Flight level (single integer: 1, 2, or 3)
-  - Altitude settings (current altitude value)
   - FOV obstacles map (size = base_fov_size + 4)
     - `-10` = Masked area (outside visible range for current flight level)
     - `0` = Empty squares
-    - `1` = Obstacles
+    - `1` = Physical obstacles (not shown for ObserverAgent at altitude >= 1)
     - `2` = Other agents (at same or lower altitude)
     - `3` = Target (probabilistic detection)
+    - `4` = Visual obstacles (block view, hide what's beneath them)
 - **Visual Representation**: Square shape with dynamic FOV border
   - Flight Level 1: Solid line border (3x3 visible area)
   - Flight Level 2: Dashed line border (5x5 visible area)
@@ -165,7 +167,8 @@ env.close()
 | `show_target_coords` | bool | False | Include target coordinates in observations |
 | `no_target` | bool | False | Disable target spawning |
 | `enable_obstacles` | bool | False | Enable obstacles in environment |
-| `num_obstacles` | int | 0 | Number of obstacles to generate |
+| `num_obstacles` | int | 0 | Number of physical obstacles to generate (block movement) |
+| `num_visual_obstacles` | int | 0 | Number of visual obstacles to generate (block ObserverAgent view) |
 
 ### Agent Configuration
 
@@ -232,12 +235,16 @@ env = GridWorldEnvMultiAgent(agents=agents, size=15, ...)
 Each agent receives individual rewards based on their FOV detection:
 
 - **`-1.0`**: Reaching the target (penalty - agents should observe, not intercept)
+- **`-0.05`**: Colliding with an obstacle (default, configurable via `obstacle_collision_penalty`)
 - **`+(1-λ)`**: Detecting target in FOV (λ = lambda_fov)
 - **`-λ`**: Being detected by target's FOV
 - **`-0.01`**: Small step penalty when no detection occurs
 - **`+0.025`**: Intrinsic exploration bonus (if enabled) for visiting new cells
 
-Note: The negative reward for reaching the target encourages agents to maintain observation distance rather than intercepting the target.
+**Notes:**
+- The negative reward for reaching the target encourages agents to maintain observation distance rather than intercepting the target.
+- ObserverAgents flying at altitude ≥ 1 do not receive obstacle collision penalties as they fly over ground obstacles.
+- Rewards are cumulative - an agent can receive multiple penalties/rewards in a single step.
 
 ## Action Space
 

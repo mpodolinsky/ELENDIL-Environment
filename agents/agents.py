@@ -181,8 +181,11 @@ class FOVAgent(BaseAgent):
         direction = action_to_direction.get(action, np.array([0, 0]))
         proposed_location = np.clip(self.location + direction, 0, self.env_size - 1)
         
+        obstacle_collision = False
+        
         # Check for obstacles
         if self._is_cell_obstacle(proposed_location, env_state["obstacles"]):
+            obstacle_collision = True
             proposed_location = self.location
         
         # Check for collisions with other agents
@@ -192,7 +195,8 @@ class FOVAgent(BaseAgent):
         return {
             "new_location": proposed_location,
             "action_taken": action,
-            "movement_blocked": np.array_equal(proposed_location, self.location) and action != 4
+            "movement_blocked": np.array_equal(proposed_location, self.location) and action != 4,
+            "obstacle_collision": obstacle_collision
         }
     
     def _get_fov_obstacles(self, env_state: Dict[str, Any]) -> np.ndarray:

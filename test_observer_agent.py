@@ -94,7 +94,7 @@ def test_observer_agent():
         # Get observation
         obs = observer.observe(env_state)
         print(f"    Observation keys: {list(obs.keys())}")
-        print(f"    Current altitude: {obs['altitude_settings']}")
+        print(f"    Current flight level: {obs['flight_level']}")
         print(f"    Flight level: {obs['flight_level']}")
         
         # Execute step
@@ -130,7 +130,7 @@ def test_observer_agent():
         
         # Show special attributes for ObserverAgent
         if isinstance(agent_obj, ObserverAgent):
-            print(f"    Altitude observation: {obs_space['altitude_settings']}")
+            print(f"    Flight level observation: {obs_space['flight_level']}")
             print(f"    Flight level observation: {obs_space['flight_level']}")
     
     # Reset environment
@@ -153,7 +153,7 @@ def test_observer_agent():
         # Show altitude for ObserverAgent
         agent_obj = env._agents_by_name[agent]
         if isinstance(agent_obj, ObserverAgent):
-            print(f"    Altitude: {obs['altitude_settings']}")
+            print(f"    Flight level: {obs['flight_level']}")
             print(f"    Flight Level: {obs['flight_level']}")
         
         # Take random action

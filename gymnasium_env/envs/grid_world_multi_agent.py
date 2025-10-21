@@ -40,11 +40,13 @@ class GridWorldEnvMultiAgent(AECEnv):
      - intrinsic: Whether to use intrinsic exploration rewards
      - lambda_fov: Weighting factor for FOV-based rewards (0 to 1)
      - show_target_coords: Whether agents can see target coordinates in their observations
+     - obstacle_collision_penalty: Penalty applied when agent collides with obstacle (default: -0.05)
      - no_target: If True, no target is spawned
      - agents: List of agent configurations or Agent instances
      - target_config: Configuration dictionary for the target
      - enable_obstacles: Whether to enable obstacles in the environment
-     - num_obstacles: Number of obstacles to generate
+     - num_obstacles: Number of physical obstacles to generate (block movement)
+     - num_visual_obstacles: Number of visual obstacles to generate (block ObserverAgent view only)
      
      Agents and Targets can be passed with custom configurations.
      If none are provided, 2 default agents and one target will be created.'''
@@ -63,6 +65,7 @@ class GridWorldEnvMultiAgent(AECEnv):
         intrinsic=False,
         lambda_fov: float = 0.5,
         show_target_coords: bool = False,
+        obstacle_collision_penalty: float = -0.05,
 
         # Agents and target settings
         no_target=False,
@@ -72,6 +75,7 @@ class GridWorldEnvMultiAgent(AECEnv):
         # Obstacles
         enable_obstacles: bool = False,
         num_obstacles: int = 0,
+        num_visual_obstacles: int = 0,
 
     ):
         self.size = size  # The size of the square grid (default to 5x5)
@@ -79,9 +83,11 @@ class GridWorldEnvMultiAgent(AECEnv):
         self.no_target = no_target  # If True, no target is spawned
         self.enable_obstacles = bool(enable_obstacles)
         self.num_obstacles = int(max(0, num_obstacles))
+        self.num_visual_obstacles = int(max(0, num_visual_obstacles))
         self.show_fov_display = bool(show_fov_display)
         self.lambda_fov = max(-0.5, min(0.5, float(lambda_fov)))  # Clamp between 0 and 1
         self.show_target_coords = bool(show_target_coords)  # If True, agents can see target coordinates
+        self.obstacle_collision_penalty = float(obstacle_collision_penalty)  # Penalty for hitting obstacles
         
         # FOV display state
         self._step_count = 0
@@ -156,6 +162,8 @@ class GridWorldEnvMultiAgent(AECEnv):
 
         # Obstacles: list of (x, y, w, h) in cell units
         self._obstacles: List[tuple] = []
+        # Visual obstacles: block ObserverAgent view but not movement
+        self._visual_obstacles: List[tuple] = []
 
         # Mapping actions to movement on the grid
         self._action_to_direction = {
@@ -240,8 +248,13 @@ class GridWorldEnvMultiAgent(AECEnv):
         self._obstacles = []
         if self.enable_obstacles and self.num_obstacles > 0:
             self._generate_random_obstacles(self.num_obstacles)
+        
+        # Generate visual obstacles (block view but not movement)
+        self._visual_obstacles = []
+        if self.enable_obstacles and self.num_visual_obstacles > 0:
+            self._generate_random_visual_obstacles(self.num_visual_obstacles)
 
-        # Sample positions not inside obstacles
+        # Sample positions not inside obstacles (only physical obstacles block spawn)
         forbidden = self._cells_covered_by_obstacles()
         choices = [i for i in range(self.size * self.size) if (i // self.size, i % self.size) not in forbidden]
         num_needed = len(self.agent_list) + (0 if self.no_target else 1)
@@ -299,6 +312,7 @@ class GridWorldEnvMultiAgent(AECEnv):
             "agents": self.agent_list,
             "target": self.target,
             "obstacles": self._obstacles,
+            "visual_obstacles": self._visual_obstacles,
             "grid_size": self.size
         }
         
@@ -379,13 +393,20 @@ class GridWorldEnvMultiAgent(AECEnv):
             "agents": self.agent_list,
             "target": self.target,
             "obstacles": self._obstacles,
+            "visual_obstacles": self._visual_obstacles,
             "grid_size": self.size
         }
+        
+        # Track if agent collided with an obstacle
+        obstacle_collision = False
         
         # Use agent's own step method if available, otherwise fall back to legacy method
         if hasattr(agent_obj, 'step') and callable(getattr(agent_obj, 'step')):
             step_result = agent_obj.step(int(action), env_state)
             proposed_loc = step_result["new_location"]
+            # Check if movement was blocked by obstacle (location didn't change when it should have)
+            if "obstacle_collision" in step_result:
+                obstacle_collision = step_result["obstacle_collision"]
             self._update_agent_location(agent_obj, proposed_loc)
         else:
             # Legacy movement method
@@ -394,6 +415,7 @@ class GridWorldEnvMultiAgent(AECEnv):
             
             # Block obstacles
             if self._is_cell_obstacle(proposed_loc):
+                obstacle_collision = True
                 proposed_loc = agent_obj.location
                 
             # Block collisions with other agents
@@ -408,6 +430,7 @@ class GridWorldEnvMultiAgent(AECEnv):
                 "agents": self.agent_list,
                 "target": self.target,
                 "obstacles": self._obstacles,
+                "visual_obstacles": self._visual_obstacles,
                 "grid_size": self.size
             }
             obs = agent_obj.observe(env_state)
@@ -421,6 +444,10 @@ class GridWorldEnvMultiAgent(AECEnv):
         # Calculate individual reward for this agent
         reward = 0.0
         
+        # Apply obstacle collision penalty if agent hit an obstacle
+        if obstacle_collision:
+            reward += self.obstacle_collision_penalty
+        
         # Update detection state for visual indicators
         self._agent_detects_target = {}
         self._target_detects_agent = {}
@@ -431,7 +458,7 @@ class GridWorldEnvMultiAgent(AECEnv):
             reached_target = np.array_equal(agent_obj.location, self.target.location)
         
         if reached_target:
-            reward = -1.0  # Penalty for reaching target (agents should observe, not intercept)
+            reward += -1.0  # Penalty for reaching target (agents should observe, not intercept)
         else:
             # Check if this agent detects target (only for agents with FOV)
             # For ObserverAgent, check actual observation (accounts for probabilistic detection)
@@ -442,6 +469,7 @@ class GridWorldEnvMultiAgent(AECEnv):
                     "agents": self.agent_list,
                     "target": self.target,
                     "obstacles": self._obstacles,
+                    "visual_obstacles": self._visual_obstacles,
                     "grid_size": self.size
                 }
                 obs = agent_obj.observe(env_state)
@@ -464,7 +492,7 @@ class GridWorldEnvMultiAgent(AECEnv):
                 reward += (1 - self.lambda_fov)
             else:
                 # Small step penalty if no detection
-                reward = -0.01
+                reward += -0.01
 
         # Intrinsic exploration rewards (if enabled)
         if self.intrinsic:
@@ -561,7 +589,7 @@ class GridWorldEnvMultiAgent(AECEnv):
                 canvas, GRID_COLOR, (pix_square * x, 0), (pix_square * x, self.window_size), 1
             )
 
-        # Obstacles (filled rectangles)
+        # Physical obstacles (filled rectangles - dark gray)
         if self._obstacles:
             OBSTACLE_COLOR = (90, 90, 90)
             for (ox, oy, ow, oh) in self._obstacles:
@@ -570,6 +598,31 @@ class GridWorldEnvMultiAgent(AECEnv):
                     (ow * pix_square, oh * pix_square),
                 )
                 pygame.draw.rect(canvas, OBSTACLE_COLOR, rect)
+        
+        # Visual obstacles (semi-transparent light gray - blocks view but not movement)
+        if self._visual_obstacles:
+            VISUAL_OBSTACLE_COLOR = (180, 180, 180, 128)  # Light gray with alpha
+            VISUAL_OBSTACLE_STRIPE_COLOR = (140, 140, 140, 180)  # Darker gray for stripes
+            
+            for (ox, oy, ow, oh) in self._visual_obstacles:
+                # Create temporary surface for this obstacle
+                temp_surface = pygame.Surface((ow * pix_square, oh * pix_square), pygame.SRCALPHA)
+                temp_surface.fill(VISUAL_OBSTACLE_COLOR)
+                
+                # Add diagonal stripe pattern
+                stripe_spacing = 8  # pixels between stripes
+                stripe_width = 3
+                
+                # Draw diagonal stripes from top-left to bottom-right
+                for i in range(-int(oh * pix_square), int(ow * pix_square), stripe_spacing):
+                    start_x = i
+                    start_y = 0
+                    end_x = i + int(oh * pix_square)
+                    end_y = int(oh * pix_square)
+                    pygame.draw.line(temp_surface, VISUAL_OBSTACLE_STRIPE_COLOR, 
+                                   (start_x, start_y), (end_x, end_y), stripe_width)
+                
+                canvas.blit(temp_surface, (ox * pix_square, oy * pix_square))
 
         # Target (only if spawned and exists)
         if self.target is not None:
@@ -854,7 +907,7 @@ class GridWorldEnvMultiAgent(AECEnv):
             canvas.blit(lambda_text, (self.window_size - 200, info_panel_y + 35))
             
             # FOV legend
-            legend_text = font_small.render("FOV: 0=Empty, 1=Obstacle, 2=Agent, 3=Target", True, TEXT_COLOR)
+            legend_text = font_small.render("FOV: 0=Empty, 1=Physical, 2=Agent, 3=Target, 4=Visual", True, TEXT_COLOR)
             canvas.blit(legend_text, (self.window_size - 200, info_panel_y + 55))
 
         # Finalize frame
@@ -1047,7 +1100,7 @@ class GridWorldEnvMultiAgent(AECEnv):
         
         # Show legend for first agent only to avoid clutter
         if agent_name == self.agents[0]:
-            print("  Legend: 0=Empty, 1=Obstacle, 2=Agent, 3=Target")
+            print("  Legend: 0=Empty, 1=Physical Obstacle, 2=Agent, 3=Target, 4=Visual Obstacle")
         print()  # New line after each agent's FOV
 
     def _clear_screen_and_show_step(self):
@@ -1085,8 +1138,7 @@ class GridWorldEnvMultiAgent(AECEnv):
         return False
 
     def _generate_random_obstacles(self, count: int) -> None:
-        # Generate rectangular obstacles within grid bounds
-        # Sizes are chosen randomly with small extents
+        """Generate rectangular physical obstacles within grid bounds."""
         attempts = 0
         max_attempts = count * 10
         created = 0
@@ -1107,8 +1159,33 @@ class GridWorldEnvMultiAgent(AECEnv):
                 continue
             self._obstacles.append(rect)
             created += 1
-
-        # Note: rendering return handled inside _render_frame; nothing to return here
+    
+    def _generate_random_visual_obstacles(self, count: int) -> None:
+        """Generate rectangular visual obstacles within grid bounds.
+        
+        Visual obstacles block ObserverAgent view but do not block movement.
+        They are placed independently of physical obstacles.
+        """
+        attempts = 0
+        max_attempts = count * 10
+        created = 0
+        while created < count and attempts < max_attempts:
+            attempts += 1
+            # Random top-left
+            ox = int(np.random.randint(0, self.size))
+            oy = int(np.random.randint(0, self.size))
+            # Random width/height (at least 1 cell), capped to remain in bounds
+            max_w = max(1, self.size - ox)
+            max_h = max(1, self.size - oy)
+            # Prefer small obstacles (same size distribution as physical obstacles)
+            ow = int(np.random.randint(1, min(4, max_w) + 1))
+            oh = int(np.random.randint(1, min(4, max_h) + 1))
+            # Avoid duplicates
+            rect = (ox, oy, ow, oh)
+            if rect in self._visual_obstacles:
+                continue
+            self._visual_obstacles.append(rect)
+            created += 1
 
 
 if __name__ == "__main__":

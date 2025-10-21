@@ -59,12 +59,11 @@ class ObserverAgent(BaseAgent):
         # Initialize altitude (starts at flight level 1, flight levels are 1, 2, 3)
         self.altitude = 1
         
-        # Define observation space with altitude and flight level information
+        # Define observation space with flight level information
         obs_dict = {
             "agent": spaces.Box(0, self.env_size - 1, shape=(2,), dtype=int),
-            "obstacles_fov": spaces.Box(-10, 3, shape=(self.fov_size, self.fov_size), dtype=int),  # -10 for masked, 0-3 for visible
-            "altitude_settings": spaces.Discrete(self.max_altitude + 1),  # 0 to max_altitude
-            "flight_level": spaces.Discrete(4),  # 0=ground, 1=level1, 2=level2, 3=level3
+            "obstacles_fov": spaces.Box(-10, 4, shape=(self.fov_size, self.fov_size), dtype=int),  # -10 for masked, 0-4 for visible
+            "flight_level": spaces.Discrete(4),  # Flight levels: 1, 2, 3 (never 0)
         }
         
         if show_target_coords:
@@ -138,8 +137,7 @@ class ObserverAgent(BaseAgent):
         obs = {
             "agent": self.location,
             "obstacles_fov": masked_fov,
-            "altitude_settings": self.altitude,  # Single integer value
-            "flight_level": self.altitude  # Single integer value (1=level1, 2=level2, 3=level3)
+            "flight_level": self.altitude  # Current flight level (1, 2, or 3)
         }
         
         # Add target coordinates if enabled
@@ -194,7 +192,8 @@ class ObserverAgent(BaseAgent):
             "altitude_action": altitude_action,
             "altitude_changed": altitude_changed,
             "movement_blocked": movement_blocked,
-            "new_altitude": self.altitude
+            "new_altitude": self.altitude,
+            "obstacle_collision": False  # ObserverAgent flies over obstacles
         }
     
     def _handle_altitude_change(self, altitude_action: int) -> bool:
@@ -240,17 +239,8 @@ class ObserverAgent(BaseAgent):
         direction = action_to_direction.get(movement_action, np.array([0, 0]))
         proposed_location = np.clip(self.location + direction, 0, self.env_size - 1)
         
-        # Check for obstacles (only if at ground level)
-        if self.altitude == 0 and self._is_cell_obstacle(proposed_location, env_state["obstacles"]):
-            proposed_location = self.location
-            return proposed_location, True
-        
-        # Check for collisions with other agents (only if at ground level)
-        if self.altitude == 0 and self._is_cell_occupied(proposed_location, env_state["agents"]):
-            proposed_location = self.location
-            return proposed_location, True
-        
-        # If at altitude > 0, movement is not blocked by ground obstacles
+        # ObserverAgent flies at altitude >= 1, so obstacles don't block movement
+        # No obstacle collision for ObserverAgent (it flies over them)
         movement_blocked = np.array_equal(proposed_location, self.location) and movement_action != 4
         
         return proposed_location, movement_blocked
@@ -291,6 +281,12 @@ class ObserverAgent(BaseAgent):
                             fov_map[i, j] = 0  # Target missed (shows as empty)
                     continue
                 
+                # Check for visual obstacles (they hide what's beneath them)
+                visual_obstacles = env_state.get("visual_obstacles", [])
+                if self._is_cell_in_visual_obstacle(world_x, world_y, visual_obstacles):
+                    fov_map[i, j] = 4  # Visual obstacle
+                    continue
+                
                 # Check for other agents (only if at same or lower altitude)
                 for other_agent in env_state["agents"]:
                     if (other_agent.name != self.name and
@@ -302,18 +298,22 @@ class ObserverAgent(BaseAgent):
                             fov_map[i, j] = 2  # Other agent
                             break
                 
-                # Check for obstacles (only if no target or other agent)
-                if (fov_map[i, j] == 0 and 
-                    self.altitude == 0 and  # Only see ground obstacles if at ground level
-                    self._is_cell_obstacle(np.array([world_x, world_y]), env_state["obstacles"])):
-                    fov_map[i, j] = 1  # Obstacle
+                # ObserverAgent flies at altitude >= 1, so it doesn't see ground obstacles
+                # (physical obstacles are not rendered in FOV for aerial agents)
         
         return fov_map
     
     def _is_cell_obstacle(self, location: np.ndarray, obstacles: list) -> bool:
-        """Check if a cell contains an obstacle."""
+        """Check if a cell contains a physical obstacle."""
         for (ox, oy, ow, oh) in obstacles:
             if (ox <= location[0] < ox + ow and oy <= location[1] < oy + oh):
+                return True
+        return False
+    
+    def _is_cell_in_visual_obstacle(self, x: int, y: int, visual_obstacles: list) -> bool:
+        """Check if a cell is covered by a visual obstacle."""
+        for (ox, oy, ow, oh) in visual_obstacles:
+            if ox <= x < ox + ow and oy <= y < oy + oh:
                 return True
         return False
     
