@@ -112,15 +112,23 @@ class GridWorldEnvMultiAgent(AECEnv):
 
         else:
             self.agent_list = []
-            for idx, cfg in enumerate(agents):
-                name = cfg.get("name", f"agent_{idx+1}")
-                color = cfg.get("color", default_colors[idx % len(default_colors)])
-                outline_width = int(cfg.get("outline_width", default_outline_width))
-                box_scale = float(cfg.get("box_scale", default_box_scale))
-                fov_size = int(cfg.get("fov_size", default_fov_size))
-                
-                agent = Agent(self.size, name, color, outline_width, box_scale, fov_size, self.show_target_coords)
-                self.agent_list.append(agent)
+            for idx, agent_or_cfg in enumerate(agents):
+                # Check if it's already an agent object or a configuration dict
+                if hasattr(agent_or_cfg, 'name') and hasattr(agent_or_cfg, 'location'):
+                    # It's already an agent object
+                    agent = agent_or_cfg
+                    self.agent_list.append(agent)
+                else:
+                    # It's a configuration dictionary
+                    cfg = agent_or_cfg
+                    name = cfg.get("name", f"agent_{idx+1}")
+                    color = cfg.get("color", default_colors[idx % len(default_colors)])
+                    outline_width = int(cfg.get("outline_width", default_outline_width))
+                    box_scale = float(cfg.get("box_scale", default_box_scale))
+                    fov_size = int(cfg.get("fov_size", default_fov_size))
+                    
+                    agent = Agent(self.size, name, color, outline_width, box_scale, fov_size, self.show_target_coords)
+                    self.agent_list.append(agent)
 
         # Public names and lookup
         self.agents: List[str] = [a.name for a in self.agent_list]
@@ -136,8 +144,8 @@ class GridWorldEnvMultiAgent(AECEnv):
         self._cumulative_rewards = {agent: 0 for agent in self.possible_agents}
 
         # Per-agent spaces (AEC format)
-        self.action_spaces = {a.name: a.action_space for a in self.agent_list}
-        self.observation_spaces = {a.name: a.observation_space for a in self.agent_list}
+        self.action_spaces = {a.name: a.get_action_space() if hasattr(a, 'get_action_space') else a.action_space for a in self.agent_list}
+        self.observation_spaces = {a.name: a.get_observation_space() if hasattr(a, 'get_observation_space') else a.observation_space for a in self.agent_list}
         
         # AEC properties for compatibility
         self.action_space = self.action_spaces
@@ -285,20 +293,31 @@ class GridWorldEnvMultiAgent(AECEnv):
             raise ValueError(f"Agent {agent} not found")
             
         agent_obj = self._agents_by_name[agent]
-        fov_obstacles = self._get_agent_fov_obstacles(agent_obj)
         
-        obs = {
-            "agent": agent_obj.location,
-            "obstacles_fov": fov_obstacles
+        # Prepare environment state for agent observation
+        env_state = {
+            "agents": self.agent_list,
+            "target": self.target,
+            "obstacles": self._obstacles,
+            "grid_size": self.size
         }
         
-        # Only include target coordinates if show_target_coords is True
-        if self.show_target_coords and self.target is not None:
-            obs["target"] = self.target.location
-        elif self.show_target_coords:
-            obs["target"] = np.array([-1, -1])
-            
-        return obs
+        # Use agent's own observation method if available, otherwise fall back to legacy method
+        if hasattr(agent_obj, 'observe') and callable(getattr(agent_obj, 'observe')):
+            return agent_obj.observe(env_state)
+        else:
+            # Legacy observation method
+            fov_obstacles = self._get_agent_fov_obstacles(agent_obj)
+            obs = {
+                "agent": agent_obj.location,
+                "obstacles_fov": fov_obstacles
+            }
+            # Only include target coordinates if show_target_coords is True
+            if self.show_target_coords and self.target is not None:
+                obs["target"] = self.target.location
+            elif self.show_target_coords:
+                obs["target"] = np.array([-1, -1])
+            return obs
 
     def last(self):
         '''
@@ -353,22 +372,46 @@ class GridWorldEnvMultiAgent(AECEnv):
         self._clear_screen_and_show_step()
 
         # Move the current agent
-        direction = self._action_to_direction[int(action)]
         agent_obj = self._agents_by_name[agent]
-        proposed_loc = np.clip(agent_obj.location + direction, 0, self.size - 1)
         
-        # Block obstacles
-        if self._is_cell_obstacle(proposed_loc):
-            proposed_loc = agent_obj.location
-            
-        # Block collisions with other agents
-        blocked = any(np.array_equal(proposed_loc, other.location) for other in self.agent_list if other.name != agent)
-        if not blocked:
+        # Prepare environment state for agent step
+        env_state = {
+            "agents": self.agent_list,
+            "target": self.target,
+            "obstacles": self._obstacles,
+            "grid_size": self.size
+        }
+        
+        # Use agent's own step method if available, otherwise fall back to legacy method
+        if hasattr(agent_obj, 'step') and callable(getattr(agent_obj, 'step')):
+            step_result = agent_obj.step(int(action), env_state)
+            proposed_loc = step_result["new_location"]
             self._update_agent_location(agent_obj, proposed_loc)
+        else:
+            # Legacy movement method
+            direction = self._action_to_direction[int(action)]
+            proposed_loc = np.clip(agent_obj.location + direction, 0, self.size - 1)
+            
+            # Block obstacles
+            if self._is_cell_obstacle(proposed_loc):
+                proposed_loc = agent_obj.location
+                
+            # Block collisions with other agents
+            blocked = any(np.array_equal(proposed_loc, other.location) for other in self.agent_list if other.name != agent)
+            if not blocked:
+                self._update_agent_location(agent_obj, proposed_loc)
         
-        # Show FOV for this agent if display is enabled
-        if self.show_fov_display:
-            fov_map = self._get_agent_fov_obstacles(agent_obj)
+        # Show FOV for this agent if display is enabled and agent has FOV
+        if self.show_fov_display and hasattr(agent_obj, 'fov_size'):
+            # Get the masked FOV from the agent's observation
+            env_state = {
+                "agents": self.agent_list,
+                "target": self.target,
+                "obstacles": self._obstacles,
+                "grid_size": self.size
+            }
+            obs = agent_obj.observe(env_state)
+            fov_map = obs["obstacles_fov"]
             self._print_fov_display(agent, fov_map, f"(action {action})")
 
         # Move target if it exists
@@ -388,16 +431,31 @@ class GridWorldEnvMultiAgent(AECEnv):
             reached_target = np.array_equal(agent_obj.location, self.target.location)
         
         if reached_target:
-            reward = 1.0  # Success reward
+            reward = -1.0  # Penalty for reaching target (agents should observe, not intercept)
         else:
-            # Check if this agent detects target
-            agent_detects = self._is_target_in_agent_fov(agent_obj)
+            # Check if this agent detects target (only for agents with FOV)
+            # For ObserverAgent, check actual observation (accounts for probabilistic detection)
+            agent_detects = False
+            if hasattr(agent_obj, 'fov_size'):
+                # Get the agent's actual observation to check if target is visible (value 3 in FOV)
+                env_state = {
+                    "agents": self.agent_list,
+                    "target": self.target,
+                    "obstacles": self._obstacles,
+                    "grid_size": self.size
+                }
+                obs = agent_obj.observe(env_state)
+                fov_map = obs["obstacles_fov"]
+                # Check if target (value 3) is in the observed FOV
+                agent_detects = np.any(fov_map == 3)
             self._agent_detects_target[agent] = agent_detects
             
             # Check if target detects this agent
-            target_detects = self._is_agent_in_target_fov(agent_obj)
+            target_detects = False
+            if self.target is not None:
+                target_detects = self._is_agent_in_target_fov(agent_obj)
             self._target_detects_agent[agent] = target_detects
-            
+                
             # Penalty: -lambda if agent is in target's FOV
             if target_detects:
                 reward -= self.lambda_fov
@@ -428,7 +486,29 @@ class GridWorldEnvMultiAgent(AECEnv):
 
         # Advance to next agent
         self._accumulate_rewards()
-        self.agent_selection = self._agent_selector.next()
+        
+        # Check if all agents are done before updating agents list
+        all_done = all(self.terminations[a] or self.truncations[a] for a in self.possible_agents)
+        
+        if all_done:
+            # Environment is done - set agents to empty list
+            self.agents = []
+            self.agent_selection = None
+        else:
+            # Remove done agents from active agents list
+            active_agents = [
+                a for a in self.possible_agents 
+                if not (self.terminations[a] or self.truncations[a])
+            ]
+            
+            # If the active agents list has changed, update the selector
+            if set(active_agents) != set(self.agents):
+                self.agents = active_agents
+                self._agent_selector = AgentSelector(self.agents)
+                self.agent_selection = self._agent_selector.next()
+            else:
+                # Normal case: just advance to next agent
+                self.agent_selection = self._agent_selector.next()
 
         if self.render_mode == "human":
             self._render_frame()
@@ -508,10 +588,24 @@ class GridWorldEnvMultiAgent(AECEnv):
                 dot_center = target_center + np.array([0, -pix_square * 0.6])  # Position higher above target
                 pygame.draw.circle(canvas, (255, 255, 0), dot_center.astype(int), int(pix_square / 8))  # Yellow dot
 
-        # Agents (circles)
+        # Agents (circles or squares)
         for a in self.agent_list:
             center = (a.location + 0.5) * pix_square
-            pygame.draw.circle(canvas, a.color, center.astype(int), int(pix_square / 3))
+            
+            # Check if this is an ObserverAgent to render as square
+            if hasattr(a, 'altitude') and hasattr(a, 'fov_base_size'):
+                # Render as square for ObserverAgent
+                square_size = int(pix_square / 3)
+                square_rect = pygame.Rect(
+                    center[0] - square_size // 2,
+                    center[1] - square_size // 2,
+                    square_size,
+                    square_size
+                )
+                pygame.draw.rect(canvas, a.color, square_rect)
+            else:
+                # Render as circle for other agents
+                pygame.draw.circle(canvas, a.color, center.astype(int), int(pix_square / 3))
             
             # Draw detection dot if agent detects target
             if self._agent_detects_target.get(a.name, False):
@@ -529,12 +623,135 @@ class GridWorldEnvMultiAgent(AECEnv):
                 top_left = start_cell * pix_square
                 side_px = pix_square * k
                 rect = pygame.Rect(top_left, (side_px, side_px))
-                pygame.draw.rect(canvas, a.color, rect, width=a.outline_width)
+                
+                # Check if this is an ObserverAgent for special line styles and visible area
+                if hasattr(a, 'altitude') and hasattr(a, 'fov_base_size'):
+                    # ObserverAgent with flight level-based visible area and line styles
+                    # Flight levels are only 1, 2, 3 (never 0)
+                    if a.altitude >= 1:
+                        # Calculate visible area based on flight level
+                        # Flight Level 1: visible = fov_size - 4 (3x3 for fov_size 7)
+                        # Flight Level 2: visible = fov_size - 2 (5x5 for fov_size 7)
+                        # Flight Level 3: visible = fov_size (7x7 for fov_size 7)
+                        rings_to_mask = 3 - a.altitude
+                        visible_size = a.fov_size - (rings_to_mask * 2)
+                        
+                        # Calculate new rectangle for visible area
+                        visible_offset = visible_size // 2
+                        visible_start_cell = (a.location - np.array([visible_offset, visible_offset]))
+                        visible_top_left = visible_start_cell * pix_square
+                        visible_side_px = pix_square * visible_size
+                        visible_rect = pygame.Rect(visible_top_left, (visible_side_px, visible_side_px))
+                        
+                        # Draw with appropriate line style based on flight level
+                        if a.altitude == 1:  # Flight level 1 - solid line (3x3)
+                            pygame.draw.rect(canvas, a.color, visible_rect, width=a.outline_width)
+                        elif a.altitude == 2:  # Flight level 2 - dashed line (5x5)
+                            draw_dashed_rect(canvas, a.color, visible_rect, a.outline_width)
+                        elif a.altitude == 3:  # Flight level 3 - dotted line (7x7)
+                            draw_dotted_rect(canvas, a.color, visible_rect, a.outline_width)
+                    else:
+                        # Ground level (altitude 0) - no FOV border
+                        pass
+                else:
+                    # Regular agent - solid line with full FOV
+                    pygame.draw.rect(canvas, a.color, rect, width=a.outline_width)
             else:
                 box_side = pix_square * a.box_scale
                 top_left = (a.location * pix_square) + ((pix_square - box_side) / 2)
                 rect = pygame.Rect(top_left, (box_side, box_side))
                 pygame.draw.rect(canvas, a.color, rect, width=a.outline_width)
+        
+        def draw_dashed_rect(surface, color, rect, width):
+            """Draw a dashed rectangle."""
+            x, y, w, h = rect
+            dash_length = 8
+            gap_length = 4
+            
+            # Top edge
+            draw_dashed_line(surface, color, (x, y), (x + w, y), dash_length, gap_length, width)
+            # Bottom edge
+            draw_dashed_line(surface, color, (x, y + h), (x + w, y + h), dash_length, gap_length, width)
+            # Left edge
+            draw_dashed_line(surface, color, (x, y), (x, y + h), dash_length, gap_length, width)
+            # Right edge
+            draw_dashed_line(surface, color, (x + w, y), (x + w, y + h), dash_length, gap_length, width)
+        
+        def draw_dotted_rect(surface, color, rect, width):
+            """Draw a dotted rectangle."""
+            x, y, w, h = rect
+            dot_spacing = 6
+            
+            # Top edge
+            draw_dotted_line(surface, color, (x, y), (x + w, y), dot_spacing, width)
+            # Bottom edge
+            draw_dotted_line(surface, color, (x, y + h), (x + w, y + h), dot_spacing, width)
+            # Left edge
+            draw_dotted_line(surface, color, (x, y), (x, y + h), dot_spacing, width)
+            # Right edge
+            draw_dotted_line(surface, color, (x + w, y), (x + w, y + h), dot_spacing, width)
+        
+        def draw_dashed_line(surface, color, start, end, dash_length, gap_length, width):
+            """Draw a dashed line."""
+            x1, y1 = start
+            x2, y2 = end
+            
+            # Calculate line length and direction
+            dx = x2 - x1
+            dy = y2 - y1
+            line_length = (dx * dx + dy * dy) ** 0.5
+            
+            if line_length == 0:
+                return
+            
+            # Normalize direction
+            dx /= line_length
+            dy /= line_length
+            
+            # Draw dashes
+            current_length = 0
+            draw_dash = True
+            
+            while current_length < line_length:
+                if draw_dash:
+                    # Calculate dash end
+                    dash_end_length = min(current_length + dash_length, line_length)
+                    start_x = x1 + dx * current_length
+                    start_y = y1 + dy * current_length
+                    end_x = x1 + dx * dash_end_length
+                    end_y = y1 + dy * dash_end_length
+                    
+                    pygame.draw.line(surface, color, (start_x, start_y), (end_x, end_y), width)
+                    current_length = dash_end_length
+                else:
+                    current_length += gap_length
+                
+                draw_dash = not draw_dash
+        
+        def draw_dotted_line(surface, color, start, end, dot_spacing, width):
+            """Draw a dotted line."""
+            x1, y1 = start
+            x2, y2 = end
+            
+            # Calculate line length and direction
+            dx = x2 - x1
+            dy = y2 - y1
+            line_length = (dx * dx + dy * dy) ** 0.5
+            
+            if line_length == 0:
+                return
+            
+            # Normalize direction
+            dx /= line_length
+            dy /= line_length
+            
+            # Draw dots
+            current_length = 0
+            while current_length < line_length:
+                dot_x = x1 + dx * current_length
+                dot_y = y1 + dy * current_length
+                pygame.draw.circle(surface, color, (int(dot_x), int(dot_y)), width)
+                current_length += dot_spacing
 
         for a in self.agent_list:
             draw_agent_box(a)

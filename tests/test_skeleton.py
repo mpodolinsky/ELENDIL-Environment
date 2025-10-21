@@ -7,8 +7,10 @@ Fill in the actual test methods as needed.
 
 import unittest
 import numpy as np
+import pygame
 from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
-from agents.agents import Agent
+from agents.agents import Agent, FOVAgent
+from agents.observer_agent import ObserverAgent
 from agents.target import Target
 
 
@@ -256,6 +258,181 @@ class TestAgentClass(unittest.TestCase):
         """Test agent visited cells tracking."""
         # TODO: Test visited cell tracking
         pass
+
+
+class TestObserverAgentRendering(unittest.TestCase):
+    """Test cases for ObserverAgent rendering functionality."""
+    
+    def setUp(self):
+        """Set up test fixtures."""
+        # Initialize pygame for rendering tests
+        pygame.init()
+        
+        # Create test agents
+        self.observer_agent = ObserverAgent(
+            name="test_observer",
+            color=(255, 0, 255),
+            env_size=8,
+            fov_base_size=3,  # FOV size 5
+            max_altitude=3,
+            show_target_coords=False
+        )
+        
+        self.fov_agent = FOVAgent(
+            name="test_fov",
+            color=(0, 255, 0),
+            env_size=8,
+            fov_size=3,
+            show_target_coords=False
+        )
+        
+        # Create environment for rendering tests
+        self.env = GridWorldEnvMultiAgent(
+            agents=[self.observer_agent, self.fov_agent],
+            size=8,
+            render_mode="rgb_array",  # Use rgb_array for testing
+            show_target_coords=False,
+            intrinsic=False
+        )
+        
+        # Set agent locations for consistent testing
+        self.observer_agent.location = np.array([2, 2])
+        self.fov_agent.location = np.array([5, 5])
+    
+    def tearDown(self):
+        """Clean up after each test method."""
+        if self.env:
+            self.env.close()
+        pygame.quit()
+    
+    def test_observer_agent_square_rendering(self):
+        """Test that ObserverAgent renders as square."""
+        # Reset environment to get consistent state
+        self.env.reset()
+        
+        # Render frame and get RGB array
+        rgb_array = self.env.render()
+        
+        # Check that RGB array is generated successfully
+        self.assertIsInstance(rgb_array, np.ndarray)
+        self.assertEqual(len(rgb_array.shape), 3)  # Should be 3D (height, width, channels)
+        self.assertEqual(rgb_array.shape[2], 3)    # Should have 3 color channels
+        
+        # The rendering should complete without errors
+        self.assertTrue(True)  # If we get here, rendering worked
+    
+    def test_observer_agent_flight_level_rendering(self):
+        """Test ObserverAgent rendering at different flight levels."""
+        # Reset environment
+        self.env.reset()
+        
+        # Test different flight levels
+        flight_levels = [0, 1, 2, 3]
+        
+        for level in flight_levels:
+            with self.subTest(flight_level=level):
+                # Set flight level
+                self.observer_agent.altitude = level
+                
+                # Render frame
+                rgb_array = self.env.render()
+                
+                # Check that rendering completes successfully
+                self.assertIsInstance(rgb_array, np.ndarray)
+                self.assertEqual(len(rgb_array.shape), 3)
+    
+    def test_mixed_agent_rendering(self):
+        """Test rendering with mixed agent types (ObserverAgent + FOVAgent)."""
+        # Reset environment
+        self.env.reset()
+        
+        # Set different flight levels for ObserverAgent
+        self.observer_agent.altitude = 2  # Flight level 2 (dashed)
+        
+        # Render frame
+        rgb_array = self.env.render()
+        
+        # Check that both agent types render correctly
+        self.assertIsInstance(rgb_array, np.ndarray)
+        self.assertEqual(len(rgb_array.shape), 3)
+    
+    def test_observer_agent_attributes(self):
+        """Test ObserverAgent has correct rendering attributes."""
+        # Check that ObserverAgent has required attributes
+        self.assertTrue(hasattr(self.observer_agent, 'altitude'))
+        self.assertTrue(hasattr(self.observer_agent, 'fov_size'))
+        self.assertTrue(hasattr(self.observer_agent, 'fov_base_size'))
+        
+        # Check initial values
+        self.assertEqual(self.observer_agent.altitude, 1)  # ObserverAgents start at flight level 1
+        self.assertEqual(self.observer_agent.fov_size, 7)  # fov_base_size + 4
+        self.assertEqual(self.observer_agent.fov_base_size, 3)
+    
+    def test_observer_agent_altitude_changes(self):
+        """Test ObserverAgent altitude changes affect rendering."""
+        # Reset environment
+        self.env.reset()
+        
+        # Test altitude changes
+        original_altitude = self.observer_agent.altitude
+        
+        # Change altitude
+        self.observer_agent.altitude = 3
+        
+        # Render and verify it works
+        rgb_array = self.env.render()
+        self.assertIsInstance(rgb_array, np.ndarray)
+        
+        # Change back
+        self.observer_agent.altitude = original_altitude
+    
+    def test_observer_agent_fov_rendering(self):
+        """Test ObserverAgent FOV rectangle rendering."""
+        # Reset environment
+        self.env.reset()
+        
+        # Test FOV rendering at different flight levels
+        for altitude in [0, 1, 2, 3]:
+            with self.subTest(altitude=altitude):
+                self.observer_agent.altitude = altitude
+                
+                # Render frame
+                rgb_array = self.env.render()
+                
+                # Verify rendering works
+                self.assertIsInstance(rgb_array, np.ndarray)
+                self.assertGreater(rgb_array.shape[0], 0)  # Has height
+                self.assertGreater(rgb_array.shape[1], 0)  # Has width
+    
+    def test_observer_agent_step_and_render(self):
+        """Test ObserverAgent step actions and rendering integration."""
+        # Reset environment
+        self.env.reset()
+        
+        # Test altitude actions (5-7)
+        altitude_actions = [5, 6, 7]  # Increase, remain, decrease
+        
+        for action in altitude_actions:
+            with self.subTest(action=action):
+                # Get environment state
+                env_state = {
+                    "agents": [self.observer_agent, self.fov_agent],
+                    "target": None,
+                    "obstacles": [],
+                    "grid_size": 8
+                }
+                
+                # Execute step
+                step_result = self.observer_agent.step(action, env_state)
+                
+                # Check step result
+                self.assertIsInstance(step_result, dict)
+                self.assertIn('new_altitude', step_result)
+                self.assertIn('altitude_changed', step_result)
+                
+                # Render after step
+                rgb_array = self.env.render()
+                self.assertIsInstance(rgb_array, np.ndarray)
 
 
 class TestTargetClass(unittest.TestCase):

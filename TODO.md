@@ -18,12 +18,23 @@
   - Implemented while maintaining AEC compliance
 
 ## New Agent Type Development
-- [ ] **Create new branch with different agent type**
-  - New agent will have completely different observation space
-  - Will be looking at a different grid compared to current agents
-  - Need to create new branch for this development
-  - Current agents use FOV-based observation space
-  - New agent type will have alternative grid observation system
+- [x] **Create modular agent system with different agent types**
+  - ✅ **COMPLETED** - Implemented modular architecture with `BaseAgent` abstract class
+  - ✅ Created `FOVAgent` (standard FOV-based agent)
+  - ✅ Created `GlobalViewAgent` (sees entire grid instead of FOV)
+  - ✅ Created `TelepathicAgent` (sees other agents' locations)
+  - ✅ Maintained backward compatibility with legacy `Agent` class
+  - ✅ Environment now supports mixed agent types seamlessly
+  - ✅ Each agent handles its own observation generation and step logic
+  - **Files Created**: `agents/special_agents.py`, `test_modular_agents.py`
+  - **Next Step**: Create new branch for advanced agent types as originally planned
+
+## ObserverAgent Boundary Logic
+- [ ] **Discuss with Christian: ObserverAgent sees 0 outside of playing area**
+  - Current behavior: ObserverAgent FOV shows 0 (empty) for cells outside the grid boundaries
+  - Potential issue: This might give misleading information about "safe" empty spaces
+  - Alternative: Should out-of-bounds areas be treated as obstacles (1) instead?
+  - Decision needed: How should the ObserverAgent perceive grid boundaries in its large FOV?
 
 ## Future Items
 - [ ] Add more items here as requested...

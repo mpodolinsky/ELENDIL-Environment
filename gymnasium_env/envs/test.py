@@ -4,6 +4,8 @@ import gymnasium as gym
 from gymnasium import spaces
 from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
 from gymnasium.wrappers import RecordVideo
+from agents.agents import FOVAgent
+from agents.observer_agent import ObserverAgent
 import time
 import yaml
 
@@ -12,31 +14,94 @@ if __name__ == "__main__":
     agent_config_path = "configs/agent_config.yaml"
     target_config_path = "configs/target_config.yaml"
 
-    agents: list[dict] = []
+    # Load target configuration
     target_config: dict = {}
-
-    with open(agent_config_path, "r") as f:
-        agent_config = yaml.safe_load(f)
-        agents.append({**agent_config})
-
     with open(target_config_path, "r") as f:
         target_config = yaml.safe_load(f)
         target_config = {**target_config}
 
-    agents.append({"name": "beta",
-    "color": [0, 255, 200],
-    "outline_width": 2,
-    "box_scale": 0.8,
-    "fov_size": 5})
+    # Load agent configuration for first agent
+    with open(agent_config_path, "r") as f:
+        agent_config = yaml.safe_load(f)
 
-    agents.append({"name": "gamma",
-    "color": [255, 200, 20],
-    "outline_width": 2,
-    "box_scale": 0.8,
-    "fov_size": 5})
+    # Create FOVAgent instances instead of dictionary configurations
+    agents = [
+        FOVAgent(
+            name=agent_config.get("name", "alpha"),
+            color=tuple(agent_config.get("color", [80, 160, 255])),
+            env_size=10,  # Will be updated with actual size
+            fov_size=agent_config.get("fov_size", 3),
+            outline_width=agent_config.get("outline_width", 1),
+            box_scale=agent_config.get("box_scale", 1.0),
+            show_target_coords=False
+        ),
+        # FOVAgent(
+        #     name="beta",
+        #     color=(0, 255, 200),
+        #     env_size=10,  # Will be updated with actual size
+        #     fov_size=5,
+        #     outline_width=2,
+        #     box_scale=0.8,
+        #     show_target_coords=False
+        # ),
+        # FOVAgent(
+        #     name="gamma",
+        #     color=(255, 200, 20),
+        #     env_size=10,  # Will be updated with actual size
+        #     fov_size=5,
+        #     outline_width=2,
+        #     box_scale=0.8,
+        #     show_target_coords=False
+        # ),
+        ObserverAgent(
+            name="epsilon",
+            color=(100, 100, 255),
+            env_size=10,  # Will be updated with actual size
+            fov_base_size=3,
+            outline_width=2,
+            box_scale=0.7,
+            show_target_coords=False,
+            target_detection_probs= (1, 0.66, 0.33),
+            max_altitude=3
+        ),
+        # ObserverAgent(
+        #     name="sigma",
+        #     color=(100, 255, 100),
+        #     env_size=10,  # Will be updated with actual size
+        #     fov_base_size=3,
+        #     outline_width=2,
+        #     box_scale=0.7,
+        #     show_target_coords=False,
+        #     target_detection_probs= (1, 0.66, 0.33),
+        #     max_altitude=3
+        # )
+    ]
 
     size = int(10)
     record = False
+
+    # Update agents' env_size with the actual size
+    for agent in agents:
+        agent.env_size = size
+        # Recreate observation space with correct size
+        if isinstance(agent, ObserverAgent):
+            # ObserverAgent uses fov_base_size and has additional parameters
+            agent._setup_agent(
+                fov_base_size=agent.fov_base_size,
+                outline_width=agent.outline_width,
+                box_scale=agent.box_scale,
+                show_target_coords=agent.show_target_coords,
+                max_altitude=agent.max_altitude,
+                target_detection_probs=agent.target_detection_probs
+            )
+        else:
+            # FOVAgent uses fov_size
+            agent._setup_agent(
+                fov_size=agent.fov_size,
+                outline_width=agent.outline_width,
+                box_scale=agent.box_scale,
+                show_target_coords=agent.show_target_coords
+            )
 
     # Ensure video folder exists
     os.makedirs("./videos", exist_ok=True)
@@ -53,7 +118,7 @@ if __name__ == "__main__":
     no_target=False,
     enable_obstacles=True,
     num_obstacles=3,
-    show_fov_display=False,
+    show_fov_display=True,
     target_config=target_config,
     lambda_fov=0.5)
 
