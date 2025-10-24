@@ -1,6 +1,6 @@
-# Multi-Agent Grid World Environment
+# ELENDIL - Environment for Limited-Exposure Navigation for Diverse Intercommunicative Learners
 
-A sophisticated multi-agent reinforcement learning environment built with PettingZoo's AEC (Agent-Environment-Cycle) interface, featuring field-of-view (FOV) based observations and dynamic target tracking.
+A multi-agent reinforcement learning environment built with PettingZoo's AEC (Agent-Environment-Cycle) interface, featuring field-of-view (FOV) based observations and dynamic target tracking.
 
 ## Overview
 
