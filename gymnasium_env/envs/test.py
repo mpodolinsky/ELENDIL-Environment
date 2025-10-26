@@ -1,7 +1,7 @@
 import os
 import gymnasium as gym
 from gymnasium import spaces
-from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+from elendil.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
 from gymnasium.wrappers import RecordVideo
 from agents.observer_agent import ObserverAgent  # Only for isinstance checks
 import time

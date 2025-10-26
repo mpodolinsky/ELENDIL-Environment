@@ -111,50 +111,49 @@ When detection fails, the target cell appears as empty (0) instead of showing th
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd HA-SPO2V-Env
+cd ELENDIL
+
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
 # Install dependencies
-pip install pettingzoo gymnasium pygame pyyaml
+pip install -e .
 ```
 
 ### Basic Usage
 
-#### Option 1: Configuration-Based (Recommended)
+The environment supports both **AEC (Sequential)** and **Parallel** APIs. Choose based on your needs:
+
+#### AEC API (Sequential Agent Interactions)
 
 ```python
 import yaml
-from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+from elendil.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
 
-# Load agent configurations from YAML files
-with open("configs/ground_agent.yaml") as f:
+# Load configurations
+with open("configs/agent_configs/ground_agent.yaml") as f:
     ground_agent_config = yaml.safe_load(f)
-    ground_agent_config["color"] = tuple(ground_agent_config["color"])
 
-with open("configs/air_observer_agent.yaml") as f:
+with open("configs/agent_configs/air_observer_agent.yaml") as f:
     air_observer_config = yaml.safe_load(f)
-    air_observer_config["color"] = tuple(air_observer_config["color"])
-    air_observer_config["target_detection_probs"] = tuple(air_observer_config["target_detection_probs"])
 
-# Load target configuration
-with open("configs/target_config.yaml") as f:
+with open("configs/target_configs/target_config.yaml") as f:
     target_config = yaml.safe_load(f)
 
-# Create environment - agents will be auto-instantiated from configs!
+# Create AEC environment - agents take turns sequentially
 env = GridWorldEnvMultiAgent(
     agents=[ground_agent_config, air_observer_config],
     size=15,
     render_mode="human",
-    show_fov_display=True,
     enable_obstacles=True,
     num_obstacles=3,
-    num_visual_obstacles=2,
     target_config=target_config
 )
 
-# Reset environment
 env.reset()
 
-# Run episode
+# AEC API: Sequential agent interactions
 for agent in env.agent_iter():
     observation, reward, termination, truncation, info = env.last()
     
@@ -168,10 +167,65 @@ for agent in env.agent_iter():
 env.close()
 ```
 
+#### Parallel API (Simultaneous Agent Interactions) - **NEW!**
+
+```python
+import yaml
+from elendil.envs.grid_world_multi_agent import GridWorldEnvParallel
+
+# Load configurations
+with open("configs/agent_configs/ground_agent.yaml") as f:
+    ground_agent_config = yaml.safe_load(f)
+
+with open("configs/agent_configs/air_observer_agent.yaml") as f:
+    air_observer_config = yaml.safe_load(f)
+
+with open("configs/target_configs/target_config.yaml") as f:
+    target_config = yaml.safe_load(f)
+
+# Create Parallel environment - all agents act simultaneously
+env = GridWorldEnvParallel(
+    agents=[ground_agent_config, air_observer_config],
+    size=15,
+    render_mode="human",
+    enable_obstacles=True,
+    num_obstacles=3,
+    target_config=target_config
+)
+
+observations, infos = env.reset()
+
+# Parallel API: Simultaneous agent interactions
+while env.agents:
+    # Generate actions for all agents
+    actions = {agent: env.action_spaces[agent].sample() for agent in env.agents}
+    
+    # All agents act simultaneously
+    observations, rewards, terminations, truncations, infos = env.step(actions)
+
+env.close()
+```
+
+#### API Comparison
+
+| Feature | AEC API | Parallel API |
+|---------|---------|--------------|
+| **Agent Interaction** | Sequential (turn-based) | Simultaneous |
+| **Performance** | Sequential overhead | Better performance |
+| **Integration** | PettingZoo standard | Compatible with many RL frameworks |
+| **Reward Timing** | Target moves after each agent | Agents rewarded before target moves |
+| **Use Cases** | Turn-based games, strict ordering | Real-time scenarios, natural interactions |
+
+**Key Benefits of Parallel API:**
+- More natural agent interactions
+- Better performance (no sequential overhead)  
+- Easier integration with many RL frameworks
+- Fairer reward attribution (agents rewarded before target moves)
+
 #### Option 2: Inline Configuration
 
 ```python
-from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+from elendil.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
 
 # Define agents as configuration dictionaries
 agent_configs = [
@@ -403,11 +457,13 @@ This environment is designed for:
 ## Project Structure
 
 ```
-HA-SPO2V-Env/
-├── gymnasium_env/
+ELENDIL/
+├── elendil/
 │   ├── envs/
-│   │   ├── grid_world_multi_agent.py  # Main AEC environment
-│   │   └── test.py                    # Test script (uses YAML configs)
+│   │   ├── grid_world_multi_agent.py  # Both AEC and Parallel environments
+│   │   ├── test.py                    # AEC API test script
+│   │   ├── test_parallel.py           # Parallel API test script
+│   │   └── api_comparison_demo.py     # Side-by-side API comparison
 │   └── wrappers/                      # Environment wrappers
 ├── agents/
 │   ├── agents.py                      # BaseAgent, FOVAgent classes
@@ -429,10 +485,24 @@ HA-SPO2V-Env/
 
 ## Testing
 
-Run the test script to see the environment in action:
+### Test Both APIs
+
+Run the comparison script to see both AEC and Parallel APIs in action:
 
 ```bash
-python gymnasium_env/envs/test.py
+python elendil/envs/api_comparison_demo.py
+```
+
+### Test Individual APIs
+
+**AEC API (Sequential):**
+```bash
+python elendil/envs/test.py
+```
+
+**Parallel API (Simultaneous):**
+```bash
+python elendil/envs/test_parallel.py
 ```
 
 ## Contributing
