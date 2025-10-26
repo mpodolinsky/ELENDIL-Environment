@@ -1,35 +1,38 @@
 import os
-from pickle import FALSE
 import gymnasium as gym
 from gymnasium import spaces
 from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
 from gymnasium.wrappers import RecordVideo
+from agents.observer_agent import ObserverAgent  # Only for isinstance checks
 import time
 import yaml
 
 if __name__ == "__main__":
 
-    agent_config_path = "configs/agent_config.yaml"
-    target_config_path = "configs/target_config.yaml"
+    # Configuration file paths
+    ground_agent_config_path = "configs/agent_configs/ground_agent.yaml"
+    air_observer_config_path = "configs/agent_configs/air_observer_agent.yaml"
+    target_config_path = "configs/target_configs/target_config.yaml"
 
-    agents: list[dict] = []
-    target_config: dict = {}
-
-    with open(agent_config_path, "r") as f:
-        agent_config = yaml.safe_load(f)
-        agents.append({**agent_config})
-
+    # Load target configuration
     with open(target_config_path, "r") as f:
         target_config = yaml.safe_load(f)
-        target_config = {**target_config}
 
-    agents.append({"name": "beta",
-    "color": [0, 255, 200],
-    "outline_width": 2,
-    "box_scale": 0.8,
-    "fov_size": 5})
+    # Load agent configurations from YAML files
+    with open(ground_agent_config_path, "r") as f:
+        ground_agent_config = yaml.safe_load(f)
 
-    size = int(15)
+    with open(air_observer_config_path, "r") as f:
+        air_observer_config = yaml.safe_load(f)
+    
+    # Create list of agent configurations
+    # The environment will automatically instantiate agents from these configs!
+    agent_configs = [
+        ground_agent_config,
+        air_observer_config
+    ]
+
+    size = int(20)
     record = False
 
     # Ensure video folder exists
@@ -43,12 +46,14 @@ if __name__ == "__main__":
 
     env = GridWorldEnvMultiAgent(render_mode=render_mode,
     size=size,
-    agents=agents,
+    agents=agent_configs,  # Pass configs - agents will be auto-instantiated!
     no_target=False,
     enable_obstacles=True,
     num_obstacles=3,
+    num_visual_obstacles=3,  # Visual obstacles for ObserverAgent (block view but not movement)
     show_fov_display=False,
     target_config=target_config,
+    max_steps=500,
     lambda_fov=0.5)
 
     if record: 
@@ -67,58 +72,89 @@ if __name__ == "__main__":
     else:
         base_env = env
 
-    obs, info = env.reset()
+    env.reset()
     
-    
-    print("Agents:", base_env.agents)
-    print("Action space:", base_env.action_space)
-    print("Observation space:", base_env.observation_space)
-    print("Initial Observation:", obs)
+    print("\n" + "="*80)
+    print("ENVIRONMENT SETUP".center(80))
+    print("="*80)
+    print(f"Grid size: {base_env.size}x{base_env.size}")
+    print(f"Physical obstacles: {len(base_env._obstacles)} (block movement)")
+    print(f"Visual obstacles: {len(base_env._visual_obstacles)} (block ObserverAgent view only)")
+    print(f"Possible agents: {base_env.possible_agents}")
+    print(f"Action spaces: {base_env.action_spaces}")
+    print(f"Observation spaces: {base_env.observation_spaces}")
     
     # Print observation space in a nice ASCII format
     print("\n" + "="*80)
     print("OBSERVATION SPACE DETAILS".center(80))
     print("="*80)
     
-    for agent_name in base_env.agents:
-        agent_obs_space = base_env.observation_space[agent_name]
+    for agent_name in base_env.possible_agents:
+        if agent_name == "_target":
+            continue  # Skip target, it's not a real agent
+        
+        agent_obs_space = base_env.observation_spaces[agent_name]
+        agent_obj = base_env._agents_by_name[agent_name]
+        
         print(f"\n┌─ {agent_name.upper()} AGENT OBSERVATION SPACE ─┐")
         print(f"│ Agent Position: {agent_obs_space['agent']}")
-        print(f"│ Target Position: {agent_obs_space['target']}")
+        if 'target' in agent_obs_space:
+            print(f"│ Target Position: {agent_obs_space['target']}")
         print(f"│ FOV Obstacles:   {agent_obs_space['obstacles_fov']}")
+        
+        # Show flight level for ObserverAgent
+        if isinstance(agent_obj, ObserverAgent):
+            print(f"│ Flight Level:    {agent_obs_space['flight_level']}")
+        
         print("└" + "─" * 40 + "┘")
     
+    # Print FOV encoding legend
     print("\n" + "="*80)
+    print("FOV ENCODING LEGEND".center(80))
+    print("="*80)
+    print("  -10 = Masked area (ObserverAgent flight level masking)")
+    print("   0  = Empty space")
+    print("   1  = Physical obstacle (blocks movement)")
+    print("   2  = Other agent")
+    print("   3  = Target")
+    print("   4  = Visual obstacle (blocks ObserverAgent view, not movement)")
+    print("="*80)
     
     # Print FOV for each agent (only if FOV display is enabled)
     if base_env.show_fov_display:
-        for agent_name in base_env.agents:
+        for agent_name in base_env.possible_agents:
+            if agent_name == "_target":
+                continue  # Skip target, it doesn't have an FOV
+            obs = base_env.observe(agent_name)
             print(f"\n{agent_name} FOV obstacles:")
-            print(obs[agent_name]['obstacles_fov'])
+            print(obs['obstacles_fov'])
 
-    done = False
     step_idx = 0
     
-    agent_cycle = iter(base_env.agents)
-    while not done and step_idx < 500:
+    # Use AEC agent_iter() pattern
+    for agent in env.agent_iter():
         step_idx += 1
-
-        try:
-            current_agent = next(agent_cycle)
-        except StopIteration:
-            # Restart the cycle if at end
-            agent_cycle = iter(base_env.agents)
-            current_agent = next(agent_cycle)
         
-        action = base_env.action_space[current_agent].sample()
-        step_action = {"agent": current_agent, "action": action}
-        obs, reward, terminated, truncated, info = env.step(step_action)
-        print(f"Agent {current_agent}, Action: {action}, Reward: {reward}")
+        observation, reward, termination, truncation, info = env.last()
         
-        if terminated or truncated:
-            done = True
+        # Handle target turn (it moves automatically, just pass dummy action)
+        if agent == "_target":
+            env.step(0)  # Dummy action for target
+            print(f"Step {step_idx}, Target moves")
+            continue
+        
+        if termination or truncation:
+            action = None
+        else:
+            action = env.action_spaces[agent].sample()
+            
+        env.step(action)
+        
+        print(f"Step {step_idx}, Agent {agent}, Action: {action}, Reward: {reward}")
+        
+        if step_idx >= 500:
             break
-
-        time.sleep(0.2)
+            
+        # time.sleep(1)
 
     env.close()

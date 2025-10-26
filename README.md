@@ -1,33 +1,472 @@
-# Gymnasium Examples
-Some simple examples of Gymnasium environments and wrappers.
-For some explanations of these examples, see the [Gymnasium documentation](https://gymnasium.farama.org).
+# ELENDIL - Environment for Limited-Exposure Navigation for Diverse Intercommunicative Learners
 
-### Environments
-This repository hosts the examples that are shown [on the environment creation documentation](https://gymnasium.farama.org/tutorials/gymnasium_basics/environment_creation/).
-- `GridWorldEnv`: Simplistic implementation of gridworld environment
+A multi-agent reinforcement learning environment built with PettingZoo's AEC (Agent-Environment-Cycle) interface, featuring field-of-view (FOV) based observations and dynamic target tracking.
 
-### Wrappers
-This repository hosts the examples that are shown [on wrapper documentation](https://gymnasium.farama.org/api/wrappers/).
-- `ClipReward`: A `RewardWrapper` that clips immediate rewards to a valid range
-- `DiscreteActions`: An `ActionWrapper` that restricts the action space to a finite subset
-- `RelativePosition`: An `ObservationWrapper` that computes the relative position between an agent and a target
-- `ReacherRewardWrapper`: Allow us to weight the reward terms for the reacher environment
+## Overview
 
-### Contributing
-If you would like to contribute, follow these steps:
-- Fork this repository
-- Clone your fork
-- Set up pre-commit via `pre-commit install`
+This environment simulates a grid-based world where multiple agents navigate to find a moving target while avoiding obstacles and other agents. Each agent operates with limited field-of-view observations, creating realistic partial observability scenarios for multi-agent reinforcement learning research.
 
-PRs may require accompanying PRs in [the documentation repo](https://github.com/Farama-Foundation/Gymnasium/tree/main/docs).
+## Features
 
+### Environment Features
+- **Multi-Agent Sequential Stepping**: Agents take turns acting using PettingZoo's AEC interface
+- **Dynamic Target Movement**: Moving target that changes position each step
+- **Dual Obstacle System**: 
+  - Physical obstacles (dark gray) block agent movement
+  - Visual obstacles (light blue with stripes) block ObserverAgent view but not movement (simulating buildings/cover)
+- **FOV-Based Observations**: Agents see only their local field-of-view, not the entire grid
+- **Individual Rewards**: Each agent receives rewards based on their own FOV detection
+- **Flexible Agent Configuration**: 
+  - Configure agents via YAML files or inline dictionaries
+  - Automatic agent type detection
+  - Support for any number and mix of agent types
+  - No need to pre-instantiate agents in external repositories
 
-## Installation
+### Agent Architecture
 
-To install your new environment, run the following commands:
+The environment supports a modular agent architecture with different agent types:
 
-```{shell}
-cd gymnasium_env
-pip install -e .
+#### Base Agent System
+All agents inherit from the `BaseAgent` abstract class, which defines the core interface:
+- `get_observation_space()`: Returns the agent's observation space
+- `get_action_space()`: Returns the agent's action space
+- `observe(env_state)`: Generates observations from the environment state
+- `step(action, env_state)`: Processes actions and returns results
+- `reset()`: Resets the agent to initial state
+
+This modular design allows for easy creation of specialized agent types with different observation spaces, action spaces, and behaviors.
+
+#### FOVAgent (Field-of-View Agent)
+Standard agent with local field-of-view based observations:
+- **Action Space**: Discrete(5) - Movement in 4 directions + no-op
+- **Observation Space**:
+  - Agent position (x, y coordinates)
+  - FOV obstacles map with encoding:
+    - `0` = Empty squares
+    - `1` = Obstacles
+    - `2` = Other agents
+    - `3` = Target
+  - Optional target coordinates
+- **Visual Representation**: Circular shape with solid FOV border
+
+#### ObserverAgent (Altitude-Aware Agent)
+Advanced agent with flight level capabilities and expanded FOV:
+- **Action Space**: Discrete(8) - 5 movement actions + 3 altitude actions
+  - Movement: Right (0), Up (1), Left (2), Down (3), No-op (4)
+  - Altitude: Increase (5), Maintain (6), Decrease (7)
+- **Flight Levels**: Operates at 3 distinct altitudes (1, 2, 3)
+  - Always starts at flight level 1
+  - Cannot descend below level 1
+- **Observation Space**:
+  - Agent position (x, y coordinates)
+  - Flight level (single integer: 1, 2, or 3)
+  - FOV obstacles map (size = base_fov_size + 4)
+    - `-10` = Masked area (outside visible range for current flight level)
+    - `0` = Empty squares
+    - `1` = Physical obstacles (not shown for ObserverAgent at altitude >= 1)
+    - `2` = Other agents (at same or lower altitude)
+    - `3` = Target (probabilistic detection)
+    - `4` = Visual obstacles (block view, hide what's beneath them)
+- **Visual Representation**: Square shape with dynamic FOV border
+  - Flight Level 1: Solid line border (3x3 visible area)
+  - Flight Level 2: Dashed line border (5x5 visible area)
+  - Flight Level 3: Dotted line border (7x7 visible area)
+
+### Flight Level Mechanics (ObserverAgent)
+
+#### FOV Masking System
+The ObserverAgent's field-of-view is dynamically masked based on altitude:
+- **Flight Level 3**: Full FOV visible (e.g., 7x7 for base_fov_size=3)
+- **Flight Level 2**: Outer ring masked, middle area visible (5x5 visible)
+- **Flight Level 1**: Two outer rings masked, core area visible (3x3 visible)
+
+Masked cells are set to `-10` in the observation, indicating they are outside the agent's current visual range.
+
+#### Altitude-Based Interactions
+- **Obstacle Avoidance**: Agents at altitude > 1 can fly over ground obstacles (value 1)
+- **Agent Detection**: Agents only see other agents at the same or lower altitude
+- **Target Movement**: Target remains on ground level
+
+#### Probabilistic Target Detection
+Target detection varies by flight level, simulating reduced accuracy at higher altitudes:
+- **Flight Level 1**: 100% detection probability (always sees target if in FOV)
+- **Flight Level 2**: 66% detection probability (2 in 3 chance)
+- **Flight Level 3**: 33% detection probability (1 in 3 chance)
+
+Detection probabilities are configurable per agent instance via the `target_detection_probs` parameter (tuple of 3 floats).
+
+When detection fails, the target cell appears as empty (0) instead of showing the target (3), even though the target is physically present in that location.
+
+### Visual Features
+- **Real-time Rendering**: PyGame-based visualization
+- **Agent Halos**: Visual indicators when agents can see each other
+- **FOV Display**: Optional field-of-view visualization
+- **Movement Trails**: Track agent movement history
+- **Information Panel**: Real-time step, agent, and reward information
+
+## Quick Start
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd HA-SPO2V-Env
+
+# Install dependencies
+pip install pettingzoo gymnasium pygame pyyaml
 ```
 
+### Basic Usage
+
+#### Option 1: Configuration-Based (Recommended)
+
+```python
+import yaml
+from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+
+# Load agent configurations from YAML files
+with open("configs/ground_agent.yaml") as f:
+    ground_agent_config = yaml.safe_load(f)
+    ground_agent_config["color"] = tuple(ground_agent_config["color"])
+
+with open("configs/air_observer_agent.yaml") as f:
+    air_observer_config = yaml.safe_load(f)
+    air_observer_config["color"] = tuple(air_observer_config["color"])
+    air_observer_config["target_detection_probs"] = tuple(air_observer_config["target_detection_probs"])
+
+# Load target configuration
+with open("configs/target_config.yaml") as f:
+    target_config = yaml.safe_load(f)
+
+# Create environment - agents will be auto-instantiated from configs!
+env = GridWorldEnvMultiAgent(
+    agents=[ground_agent_config, air_observer_config],
+    size=15,
+    render_mode="human",
+    show_fov_display=True,
+    enable_obstacles=True,
+    num_obstacles=3,
+    num_visual_obstacles=2,
+    target_config=target_config
+)
+
+# Reset environment
+env.reset()
+
+# Run episode
+for agent in env.agent_iter():
+    observation, reward, termination, truncation, info = env.last()
+    
+    if termination or truncation:
+        action = None
+    else:
+        action = env.action_spaces[agent].sample()
+    
+    env.step(action)
+
+env.close()
+```
+
+#### Option 2: Inline Configuration
+
+```python
+from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+
+# Define agents as configuration dictionaries
+agent_configs = [
+    {
+        "name": "ground_agent",
+        "type": "FOVAgent",
+        "color": (80, 160, 255),
+        "fov_size": 5
+    },
+    {
+        "name": "aerial_agent",
+        "type": "ObserverAgent",
+        "color": (255, 100, 100),
+        "fov_base_size": 3,
+        "max_altitude": 3,
+        "target_detection_probs": (1.0, 0.66, 0.33)
+    }
+]
+
+# Create environment
+env = GridWorldEnvMultiAgent(
+    agents=agent_configs,
+    size=15,
+    render_mode="human",
+    enable_obstacles=True,
+    num_obstacles=3
+)
+
+env.reset()
+
+# Run episode
+for agent in env.agent_iter():
+    observation, reward, termination, truncation, info = env.last()
+    if termination or truncation:
+        action = None
+    else:
+        action = env.action_spaces[agent].sample()
+    env.step(action)
+
+env.close()
+```
+
+## Configuration
+
+### Environment Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `size` | int | 5 | Grid size (size x size) |
+| `max_steps` | int | 500 | Maximum steps per episode |
+| `render_mode` | str | None | "human", "rgb_array", or None |
+| `show_fov_display` | bool | True | Display agent FOVs in human mode |
+| `intrinsic` | bool | False | Enable intrinsic exploration rewards |
+| `lambda_fov` | float | 0.5 | FOV reward weighting factor (0-1) |
+| `show_target_coords` | bool | False | Include target coordinates in observations |
+| `no_target` | bool | False | Disable target spawning |
+| `enable_obstacles` | bool | False | Enable obstacles in environment |
+| `num_obstacles` | int | 0 | Number of physical obstacles to generate (block movement) |
+| `num_visual_obstacles` | int | 0 | Number of visual obstacles to generate (block ObserverAgent view) |
+
+### Agent Configuration
+
+The environment supports flexible agent configuration through **dictionaries** (recommended) or pre-instantiated objects. Agent configurations can be loaded from YAML files or defined inline.
+
+#### Configuration Files
+
+The `configs/` directory contains agent configuration files:
+
+**Ground Agent (FOVAgent)** - `configs/ground_agent.yaml`:
+```yaml
+name: "alpha"
+type: "FOVAgent"
+color: [80, 160, 255]  # Blue
+fov_size: 5
+outline_width: 2
+box_scale: 0.9
+show_target_coords: False
+```
+
+**Air Observer Agent (ObserverAgent)** - `configs/air_observer_agent.yaml`:
+```yaml
+name: "epsilon"
+type: "ObserverAgent"
+color: [255, 100, 100]  # Red
+fov_base_size: 3
+max_altitude: 3
+target_detection_probs: [1.0, 0.66, 0.33]
+outline_width: 2
+box_scale: 0.7
+show_target_coords: False
+```
+
+#### Configuration Parameters
+
+**FOVAgent Configuration:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | str | Unique agent identifier |
+| `type` | str | "FOVAgent" (optional, auto-detected) |
+| `color` | tuple/list | RGB color values |
+| `fov_size` | int | Field of view size |
+| `outline_width` | int | Visual outline thickness (default: 2) |
+| `box_scale` | float | Agent box scale (default: 0.8) |
+| `show_target_coords` | bool | Override env setting (default: False) |
+
+**ObserverAgent Configuration:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | str | Unique agent identifier |
+| `type` | str | "ObserverAgent" (optional, auto-detected) |
+| `color` | tuple/list | RGB color values |
+| `fov_base_size` | int | Base FOV size (actual: base_size + 4) |
+| `max_altitude` | int | Maximum altitude level (default: 3) |
+| `target_detection_probs` | tuple/list | Detection probability per FL [FL1, FL2, FL3] |
+| `outline_width` | int | Visual outline thickness (default: 2) |
+| `box_scale` | float | Agent box scale (default: 0.8) |
+| `show_target_coords` | bool | Override env setting (default: False) |
+
+#### Using Configuration Dictionaries
+
+```python
+# Define agents directly as dictionaries
+agent_configs = [
+    {
+        "name": "agent_1",
+        "type": "FOVAgent",
+        "color": (80, 160, 255),
+        "fov_size": 5
+    },
+    {
+        "name": "observer_1",
+        "type": "ObserverAgent",
+        "color": (255, 100, 100),
+        "fov_base_size": 3,
+        "max_altitude": 3,
+        "target_detection_probs": (1.0, 0.66, 0.33)
+    }
+]
+
+env = GridWorldEnvMultiAgent(agents=agent_configs, size=15)
+```
+
+#### Automatic Type Detection
+
+The environment can automatically detect agent type based on parameters:
+```python
+agent_configs = [
+    {"name": "ground", "fov_size": 5},           # Auto-detected as FOVAgent
+    {"name": "aerial", "fov_base_size": 3}       # Auto-detected as ObserverAgent
+]
+```
+
+#### Pre-Instantiated Agents (Still Supported)
+
+```python
+from agents.agents import FOVAgent
+from agents.observer_agent import ObserverAgent
+
+agents = [
+    FOVAgent(name="ground_agent", color=(255, 100, 100), env_size=15, fov_size=5),
+    ObserverAgent(name="aerial_agent", color=(100, 100, 255), env_size=15, fov_base_size=3)
+]
+
+env = GridWorldEnvMultiAgent(agents=agents, size=15)
+```
+
+#### Mixed Configuration and Instances
+
+```python
+from agents.agents import FOVAgent
+
+agents = [
+    FOVAgent(name="agent_1", color=(80, 160, 255), env_size=15, fov_size=5),  # Instance
+    {"name": "observer_1", "type": "ObserverAgent", "fov_base_size": 3}       # Config
+]
+
+env = GridWorldEnvMultiAgent(agents=agents, size=15)
+```
+
+For more details on configuration-based setup, see `AGENT_CONFIG_GUIDE.md` and `example_config_based.py`.
+
+## Reward System
+
+Each agent receives individual rewards based on their FOV detection:
+
+- **`-3λ`**: Reaching the target location (penalty - agents should observe, not intercept, where λ = lambda_fov)
+- **`-0.05`**: Colliding with an obstacle (default, configurable via `obstacle_collision_penalty`)
+- **`+(1-λ)`**: Detecting target in FOV (λ = lambda_fov)
+- **`-λ`**: Being detected by target's FOV
+- **`-0.01`**: Small step penalty when no detection occurs
+- **`+0.025`**: Intrinsic exploration bonus (if enabled) for visiting new cells
+
+**Notes:**
+- The negative reward for reaching the target encourages agents to maintain observation distance rather than intercepting the target. The episode continues even when the target is reached.
+- ObserverAgents flying at altitude ≥ 1 do not receive obstacle collision penalties as they fly over ground obstacles.
+- Rewards are cumulative - an agent can receive multiple penalties/rewards in a single step.
+
+## Action Space
+
+### FOVAgent Action Space
+Discrete(5) - Standard movement actions:
+- `0` = Move Right
+- `1` = Move Up  
+- `2` = Move Left
+- `3` = Move Down
+- `4` = No Operation
+
+### ObserverAgent Action Space
+Discrete(8) - Movement and altitude control:
+- `0` = Move Right
+- `1` = Move Up
+- `2` = Move Left
+- `3` = Move Down
+- `4` = No Operation
+- `5` = Increase Altitude (up to level 3)
+- `6` = Maintain Altitude (no change)
+- `7` = Decrease Altitude (minimum level 1)
+
+## Research Applications
+
+This environment is designed for:
+
+- **Multi-Agent Reinforcement Learning**: Sequential agent interactions
+- **Partial Observability**: FOV-based limited observations
+- **Cooperative/Competitive Scenarios**: Configurable reward structures
+- **Exploration Research**: Intrinsic motivation and FOV-based rewards
+- **AEC Framework Studies**: PettingZoo compatibility research
+
+## Project Structure
+
+```
+HA-SPO2V-Env/
+├── gymnasium_env/
+│   ├── envs/
+│   │   ├── grid_world_multi_agent.py  # Main AEC environment
+│   │   └── test.py                    # Test script (uses YAML configs)
+│   └── wrappers/                      # Environment wrappers
+├── agents/
+│   ├── agents.py                      # BaseAgent, FOVAgent classes
+│   ├── observer_agent.py              # ObserverAgent with flight levels
+│   ├── special_agents.py              # GlobalViewAgent, TelepathicAgent
+│   └── target.py                      # Target class definition
+├── configs/                           # YAML configuration files
+│   ├── ground_agent.yaml              # FOVAgent configuration
+│   ├── air_observer_agent.yaml        # ObserverAgent configuration
+│   ├── agent_config.yaml              # Legacy agent config
+│   └── target_config.yaml             # Target configuration
+├── tests/                             # Unit test suite
+├── videos/                            # Recorded episodes
+├── AGENT_CONFIG_GUIDE.md              # Detailed configuration guide
+├── example_config_based.py            # Configuration examples
+├── demo_capabilities.py               # Capability demonstration script
+└── visualize_obstacles.py             # Obstacle generation visualization
+```
+
+## Testing
+
+Run the test script to see the environment in action:
+
+```bash
+python gymnasium_env/envs/test.py
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- Built with [PettingZoo](https://pettingzoo.farama.org/) for multi-agent RL
+- Uses [Gymnasium](https://gymnasium.farama.org/) as the base RL framework
+- Rendered with [PyGame](https://www.pygame.org/) for visualization
+
+## Documentation
+
+### Configuration Guides
+- **`AGENT_CONFIG_GUIDE.md`**: Comprehensive guide to agent configuration system
+  - Configuration dictionary format
+  - YAML file integration
+  - Automatic type detection
+  - Migration guide from old approach
+- **`example_config_based.py`**: Five detailed examples showing configuration usage
+- **`demo_capabilities.py`**: Scripted demonstration of agent capabilities
+
+### API Documentation
+For detailed API documentation, see the inline code documentation in the source files.
+
+---
+
+**Note**: This environment follows PettingZoo's AEC (Agent-Environment-Cycle) standard, ensuring compatibility with the broader multi-agent RL ecosystem.
