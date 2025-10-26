@@ -128,7 +128,7 @@ def create_demo_scenario():
     print()
     print("  ✓ Obstacles:")
     print("    - Physical obstacles (solid dark gray): Block all movement")
-    print("    - Visual obstacles (diagonal stripes): Block ObserverAgent view only")
+    print("    - Visual obstacles (light blue with stripes): Block ObserverAgent view only")
     print()
     print("  ✓ Rewards:")
     print("    - Based on target detection in FOV")
@@ -203,6 +203,16 @@ def create_demo_scenario():
         step_idx += 1
         
         observation, reward, termination, truncation, info = env.last()
+        
+        # Handle target turn (it moves automatically)
+        if agent == "_target":
+            env.step(0)  # Dummy action for target
+            # Capture frame if recording
+            if record:
+                frame = env.render()
+                if frame is not None:
+                    frames.append(frame)
+            continue
         
         if termination or truncation:
             action = None
@@ -287,8 +297,8 @@ def create_demo_scenario():
     print("\nKey Observations:")
     print("  • FOVAgent maintained constant FOV size throughout")
     print("  • ObserverAgent dynamically adjusted altitude and FOV")
-    print("  • Physical obstacles blocked movement for both agents")
-    print("  • Visual obstacles only blocked ObserverAgent's view")
+    print("  • Physical obstacles (dark gray) blocked movement for both agents")
+    print("  • Visual obstacles (light blue striped) only blocked ObserverAgent's view")
     print("  • Rewards varied based on target detection and FOV coverage")
     print("="*100 + "\n")
 

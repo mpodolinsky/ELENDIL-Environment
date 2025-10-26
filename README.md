@@ -12,10 +12,15 @@ This environment simulates a grid-based world where multiple agents navigate to 
 - **Multi-Agent Sequential Stepping**: Agents take turns acting using PettingZoo's AEC interface
 - **Dynamic Target Movement**: Moving target that changes position each step
 - **Dual Obstacle System**: 
-  - Physical obstacles block agent movement
-  - Visual obstacles block ObserverAgent view but not movement (simulating buildings/cover)
+  - Physical obstacles (dark gray) block agent movement
+  - Visual obstacles (light blue with stripes) block ObserverAgent view but not movement (simulating buildings/cover)
 - **FOV-Based Observations**: Agents see only their local field-of-view, not the entire grid
 - **Individual Rewards**: Each agent receives rewards based on their own FOV detection
+- **Flexible Agent Configuration**: 
+  - Configure agents via YAML files or inline dictionaries
+  - Automatic agent type detection
+  - Support for any number and mix of agent types
+  - No need to pre-instantiate agents in external repositories
 
 ### Agent Architecture
 
@@ -114,25 +119,36 @@ pip install pettingzoo gymnasium pygame pyyaml
 
 ### Basic Usage
 
+#### Option 1: Configuration-Based (Recommended)
+
 ```python
+import yaml
 from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
-from agents.agents import FOVAgent
-from agents.observer_agent import ObserverAgent
 
-# Create agents
-agents = [
-    FOVAgent(name="ground_agent", color=(255, 100, 100), env_size=15, fov_size=5),
-    ObserverAgent(name="aerial_agent", color=(100, 100, 255), env_size=15, fov_base_size=3)
-]
+# Load agent configurations from YAML files
+with open("configs/ground_agent.yaml") as f:
+    ground_agent_config = yaml.safe_load(f)
+    ground_agent_config["color"] = tuple(ground_agent_config["color"])
 
-# Create environment
+with open("configs/air_observer_agent.yaml") as f:
+    air_observer_config = yaml.safe_load(f)
+    air_observer_config["color"] = tuple(air_observer_config["color"])
+    air_observer_config["target_detection_probs"] = tuple(air_observer_config["target_detection_probs"])
+
+# Load target configuration
+with open("configs/target_config.yaml") as f:
+    target_config = yaml.safe_load(f)
+
+# Create environment - agents will be auto-instantiated from configs!
 env = GridWorldEnvMultiAgent(
-    agents=agents,
+    agents=[ground_agent_config, air_observer_config],
     size=15,
-    render_mode="human",  # or "rgb_array" for headless
+    render_mode="human",
     show_fov_display=True,
     enable_obstacles=True,
-    num_obstacles=3
+    num_obstacles=3,
+    num_visual_obstacles=2,
+    target_config=target_config
 )
 
 # Reset environment
@@ -147,6 +163,52 @@ for agent in env.agent_iter():
     else:
         action = env.action_spaces[agent].sample()
     
+    env.step(action)
+
+env.close()
+```
+
+#### Option 2: Inline Configuration
+
+```python
+from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+
+# Define agents as configuration dictionaries
+agent_configs = [
+    {
+        "name": "ground_agent",
+        "type": "FOVAgent",
+        "color": (80, 160, 255),
+        "fov_size": 5
+    },
+    {
+        "name": "aerial_agent",
+        "type": "ObserverAgent",
+        "color": (255, 100, 100),
+        "fov_base_size": 3,
+        "max_altitude": 3,
+        "target_detection_probs": (1.0, 0.66, 0.33)
+    }
+]
+
+# Create environment
+env = GridWorldEnvMultiAgent(
+    agents=agent_configs,
+    size=15,
+    render_mode="human",
+    enable_obstacles=True,
+    num_obstacles=3
+)
+
+env.reset()
+
+# Run episode
+for agent in env.agent_iter():
+    observation, reward, termination, truncation, info = env.last()
+    if termination or truncation:
+        action = None
+    else:
+        action = env.action_spaces[agent].sample()
     env.step(action)
 
 env.close()
@@ -172,52 +234,98 @@ env.close()
 
 ### Agent Configuration
 
-#### Using FOVAgent
-```python
-from agents.agents import FOVAgent
+The environment supports flexible agent configuration through **dictionaries** (recommended) or pre-instantiated objects. Agent configurations can be loaded from YAML files or defined inline.
 
-agents = [
-    FOVAgent(
-        name="agent_1",
-        color=(80, 160, 255),
-        env_size=15,
-        fov_size=5,
-        outline_width=2,
-        box_scale=0.8
-    ),
-    FOVAgent(
-        name="agent_2", 
-        color=(255, 180, 60),
-        env_size=15,
-        fov_size=3,
-        outline_width=1,
-        box_scale=1.0
-    )
-]
+#### Configuration Files
 
-env = GridWorldEnvMultiAgent(agents=agents, size=15, ...)
+The `configs/` directory contains agent configuration files:
+
+**Ground Agent (FOVAgent)** - `configs/ground_agent.yaml`:
+```yaml
+name: "alpha"
+type: "FOVAgent"
+color: [80, 160, 255]  # Blue
+fov_size: 5
+outline_width: 2
+box_scale: 0.9
+show_target_coords: False
 ```
 
-#### Using ObserverAgent
-```python
-from agents.observer_agent import ObserverAgent
-
-agents = [
-    ObserverAgent(
-        name="observer_1",
-        color=(100, 100, 255),
-        env_size=15,
-        fov_base_size=3,  # Actual FOV will be 7x7 (base + 4)
-        max_altitude=3,
-        target_detection_probs=(1.0, 0.66, 0.33),  # FL1, FL2, FL3
-        show_target_coords=False
-    )
-]
-
-env = GridWorldEnvMultiAgent(agents=agents, size=15, ...)
+**Air Observer Agent (ObserverAgent)** - `configs/air_observer_agent.yaml`:
+```yaml
+name: "epsilon"
+type: "ObserverAgent"
+color: [255, 100, 100]  # Red
+fov_base_size: 3
+max_altitude: 3
+target_detection_probs: [1.0, 0.66, 0.33]
+outline_width: 2
+box_scale: 0.7
+show_target_coords: False
 ```
 
-#### Mixed Agent Types
+#### Configuration Parameters
+
+**FOVAgent Configuration:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | str | Unique agent identifier |
+| `type` | str | "FOVAgent" (optional, auto-detected) |
+| `color` | tuple/list | RGB color values |
+| `fov_size` | int | Field of view size |
+| `outline_width` | int | Visual outline thickness (default: 2) |
+| `box_scale` | float | Agent box scale (default: 0.8) |
+| `show_target_coords` | bool | Override env setting (default: False) |
+
+**ObserverAgent Configuration:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | str | Unique agent identifier |
+| `type` | str | "ObserverAgent" (optional, auto-detected) |
+| `color` | tuple/list | RGB color values |
+| `fov_base_size` | int | Base FOV size (actual: base_size + 4) |
+| `max_altitude` | int | Maximum altitude level (default: 3) |
+| `target_detection_probs` | tuple/list | Detection probability per FL [FL1, FL2, FL3] |
+| `outline_width` | int | Visual outline thickness (default: 2) |
+| `box_scale` | float | Agent box scale (default: 0.8) |
+| `show_target_coords` | bool | Override env setting (default: False) |
+
+#### Using Configuration Dictionaries
+
+```python
+# Define agents directly as dictionaries
+agent_configs = [
+    {
+        "name": "agent_1",
+        "type": "FOVAgent",
+        "color": (80, 160, 255),
+        "fov_size": 5
+    },
+    {
+        "name": "observer_1",
+        "type": "ObserverAgent",
+        "color": (255, 100, 100),
+        "fov_base_size": 3,
+        "max_altitude": 3,
+        "target_detection_probs": (1.0, 0.66, 0.33)
+    }
+]
+
+env = GridWorldEnvMultiAgent(agents=agent_configs, size=15)
+```
+
+#### Automatic Type Detection
+
+The environment can automatically detect agent type based on parameters:
+```python
+agent_configs = [
+    {"name": "ground", "fov_size": 5},           # Auto-detected as FOVAgent
+    {"name": "aerial", "fov_base_size": 3}       # Auto-detected as ObserverAgent
+]
+```
+
+#### Pre-Instantiated Agents (Still Supported)
+
 ```python
 from agents.agents import FOVAgent
 from agents.observer_agent import ObserverAgent
@@ -227,14 +335,29 @@ agents = [
     ObserverAgent(name="aerial_agent", color=(100, 100, 255), env_size=15, fov_base_size=3)
 ]
 
-env = GridWorldEnvMultiAgent(agents=agents, size=15, ...)
+env = GridWorldEnvMultiAgent(agents=agents, size=15)
 ```
+
+#### Mixed Configuration and Instances
+
+```python
+from agents.agents import FOVAgent
+
+agents = [
+    FOVAgent(name="agent_1", color=(80, 160, 255), env_size=15, fov_size=5),  # Instance
+    {"name": "observer_1", "type": "ObserverAgent", "fov_base_size": 3}       # Config
+]
+
+env = GridWorldEnvMultiAgent(agents=agents, size=15)
+```
+
+For more details on configuration-based setup, see `AGENT_CONFIG_GUIDE.md` and `example_config_based.py`.
 
 ## Reward System
 
 Each agent receives individual rewards based on their FOV detection:
 
-- **`-1.0`**: Reaching the target (penalty - agents should observe, not intercept)
+- **`-3λ`**: Reaching the target location (penalty - agents should observe, not intercept, where λ = lambda_fov)
 - **`-0.05`**: Colliding with an obstacle (default, configurable via `obstacle_collision_penalty`)
 - **`+(1-λ)`**: Detecting target in FOV (λ = lambda_fov)
 - **`-λ`**: Being detected by target's FOV
@@ -242,7 +365,7 @@ Each agent receives individual rewards based on their FOV detection:
 - **`+0.025`**: Intrinsic exploration bonus (if enabled) for visiting new cells
 
 **Notes:**
-- The negative reward for reaching the target encourages agents to maintain observation distance rather than intercepting the target.
+- The negative reward for reaching the target encourages agents to maintain observation distance rather than intercepting the target. The episode continues even when the target is reached.
 - ObserverAgents flying at altitude ≥ 1 do not receive obstacle collision penalties as they fly over ground obstacles.
 - Rewards are cumulative - an agent can receive multiple penalties/rewards in a single step.
 
@@ -284,16 +407,24 @@ HA-SPO2V-Env/
 ├── gymnasium_env/
 │   ├── envs/
 │   │   ├── grid_world_multi_agent.py  # Main AEC environment
-│   │   └── test.py                    # Test script
+│   │   └── test.py                    # Test script (uses YAML configs)
 │   └── wrappers/                      # Environment wrappers
 ├── agents/
 │   ├── agents.py                      # BaseAgent, FOVAgent classes
 │   ├── observer_agent.py              # ObserverAgent with flight levels
 │   ├── special_agents.py              # GlobalViewAgent, TelepathicAgent
 │   └── target.py                      # Target class definition
-├── configs/                           # Configuration files
+├── configs/                           # YAML configuration files
+│   ├── ground_agent.yaml              # FOVAgent configuration
+│   ├── air_observer_agent.yaml        # ObserverAgent configuration
+│   ├── agent_config.yaml              # Legacy agent config
+│   └── target_config.yaml             # Target configuration
 ├── tests/                             # Unit test suite
-└── videos/                            # Recorded episodes
+├── videos/                            # Recorded episodes
+├── AGENT_CONFIG_GUIDE.md              # Detailed configuration guide
+├── example_config_based.py            # Configuration examples
+├── demo_capabilities.py               # Capability demonstration script
+└── visualize_obstacles.py             # Obstacle generation visualization
 ```
 
 ## Testing
@@ -324,7 +455,17 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Documentation
 
-For detailed API documentation and advanced usage examples, see the inline code documentation in the source files.
+### Configuration Guides
+- **`AGENT_CONFIG_GUIDE.md`**: Comprehensive guide to agent configuration system
+  - Configuration dictionary format
+  - YAML file integration
+  - Automatic type detection
+  - Migration guide from old approach
+- **`example_config_based.py`**: Five detailed examples showing configuration usage
+- **`demo_capabilities.py`**: Scripted demonstration of agent capabilities
+
+### API Documentation
+For detailed API documentation, see the inline code documentation in the source files.
 
 ---
 

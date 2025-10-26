@@ -9,9 +9,10 @@ from gymnasium.wrappers import FlattenObservation
 from pettingzoo import AECEnv
 from pettingzoo.utils import AgentSelector
 
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Any
 
-from agents.agents import Agent
+from agents.agents import Agent, FOVAgent
+from agents.observer_agent import ObserverAgent
 from agents.target import Target
 
 # TODO review the agent FOV, I want it to represent the agent's perspective in the world
@@ -42,14 +43,26 @@ class GridWorldEnvMultiAgent(AECEnv):
      - show_target_coords: Whether agents can see target coordinates in their observations
      - obstacle_collision_penalty: Penalty applied when agent collides with obstacle (default: -0.05)
      - no_target: If True, no target is spawned
-     - agents: List of agent configurations or Agent instances
+     - agents: List of agent configurations (dicts) or Agent instances. Supports any mix of:
+         * FOVAgent instances (pre-instantiated)
+         * ObserverAgent instances (pre-instantiated)
+         * Dict configs for FOVAgent: {"type": "FOVAgent", "name": str, "color": tuple, "fov_size": int, ...}
+         * Dict configs for ObserverAgent: {"type": "ObserverAgent", "name": str, "color": tuple, 
+                                           "fov_base_size": int, "max_altitude": int, 
+                                           "target_detection_probs": tuple, ...}
+         If None, creates 2 default FOVAgents.
      - target_config: Configuration dictionary for the target
      - enable_obstacles: Whether to enable obstacles in the environment
      - num_obstacles: Number of physical obstacles to generate (block movement)
      - num_visual_obstacles: Number of visual obstacles to generate (block ObserverAgent view only)
      
-     Agents and Targets can be passed with custom configurations.
-     If none are provided, 2 default agents and one target will be created.'''
+     Agent Configuration Examples:
+         # FOVAgent config
+         {"name": "alpha", "type": "FOVAgent", "color": (80, 160, 255), "fov_size": 5}
+         
+         # ObserverAgent config
+         {"name": "observer1", "type": "ObserverAgent", "color": (255, 100, 100), 
+          "fov_base_size": 3, "max_altitude": 3, "target_detection_probs": (1.0, 0.66, 0.33)}'''
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 5}
 
     def __init__(
@@ -97,51 +110,87 @@ class GridWorldEnvMultiAgent(AECEnv):
         self._agent_detects_target = {}  # Track which agents detect the target
         self._target_detects_agent = {}  # Track which agents the target detects
 
-        # Back-compat defaults for per-agent visual params NOTE Remove ? I dont need backward compatibility
-        default_outline_width = int(1)
-        default_box_scale = float(0.8)
-        default_fov_size = int(1)
-
-        # Build agents list (support custom configs)
-        default_colors = [(80, 160, 255), (255, 180, 60)]
-        self.agent_list: List[Agent] = []
+        # Build agents list (support custom configs or instances)
+        default_colors = [(80, 160, 255), (255, 180, 60), (100, 200, 100), (255, 100, 100)]
+        self.agent_list: List[Union[FOVAgent, ObserverAgent]] = []
 
         if agents is None:
-            # Auto-generate N default agents
-            count = 2 # num_default_agents
-            self.agent_list = []
+            # Auto-generate 2 default FOVAgents
+            count = 2
             for i in range(count):
                 name = f"agent_{i+1}"
                 color = default_colors[i % len(default_colors)]
-                agent = Agent(self.size, name, color, None, default_outline_width, default_box_scale, default_fov_size, self.show_target_coords)
+                agent = FOVAgent(
+                    name=name,
+                    color=color,
+                    env_size=self.size,
+                    fov_size=3,
+                    outline_width=1,
+                    box_scale=0.8,
+                    show_target_coords=self.show_target_coords
+                )
                 self.agent_list.append(agent)
-
         else:
-            self.agent_list = []
             for idx, agent_or_cfg in enumerate(agents):
-                # Check if it's already an agent object or a configuration dict
-                if hasattr(agent_or_cfg, 'name') and hasattr(agent_or_cfg, 'location'):
-                    # It's already an agent object
-                    agent = agent_or_cfg
-                    self.agent_list.append(agent)
-                else:
-                    # It's a configuration dictionary
+                # Check if it's already an agent instance or a configuration dict
+                if isinstance(agent_or_cfg, (FOVAgent, ObserverAgent, Agent)):
+                    # It's already an agent object - use it directly
+                    self.agent_list.append(agent_or_cfg)
+                elif isinstance(agent_or_cfg, dict):
+                    # It's a configuration dictionary - instantiate the agent
                     cfg = agent_or_cfg
                     name = cfg.get("name", f"agent_{idx+1}")
-                    color = cfg.get("color", default_colors[idx % len(default_colors)])
-                    outline_width = int(cfg.get("outline_width", default_outline_width))
-                    box_scale = float(cfg.get("box_scale", default_box_scale))
-                    fov_size = int(cfg.get("fov_size", default_fov_size))
+                    color = tuple(cfg.get("color", default_colors[idx % len(default_colors)]))
+                    outline_width = int(cfg.get("outline_width", 2))
+                    box_scale = float(cfg.get("box_scale", 0.8))
+                    show_coords = cfg.get("show_target_coords", self.show_target_coords)
                     
-                    agent = Agent(self.size, name, color, outline_width, box_scale, fov_size, self.show_target_coords)
+                    # Determine agent type from config
+                    agent_type = cfg.get("type", "FOVAgent")
+                    
+                    # Check for ObserverAgent-specific parameters
+                    has_observer_params = any(key in cfg for key in 
+                                             ["fov_base_size", "max_altitude", "target_detection_probs"])
+                    
+                    if agent_type == "ObserverAgent" or has_observer_params:
+                        # Create ObserverAgent
+                        agent = ObserverAgent(
+                            name=name,
+                            color=color,
+                            env_size=self.size,
+                            fov_base_size=int(cfg.get("fov_base_size", 3)),
+                            outline_width=outline_width,
+                            box_scale=box_scale,
+                            show_target_coords=show_coords,
+                            max_altitude=int(cfg.get("max_altitude", 3)),
+                            target_detection_probs=tuple(cfg.get("target_detection_probs", (1.0, 0.66, 0.33)))
+                        )
+                    else:
+                        # Create FOVAgent
+                        agent = FOVAgent(
+                            name=name,
+                            color=color,
+                            env_size=self.size,
+                            fov_size=int(cfg.get("fov_size", 3)),
+                            outline_width=outline_width,
+                            box_scale=box_scale,
+                            show_target_coords=show_coords
+                        )
+                    
                     self.agent_list.append(agent)
+                else:
+                    raise ValueError(f"Agent at index {idx} must be either an agent instance or a configuration dict, got {type(agent_or_cfg)}")
 
         # Public names and lookup
         self.agents: List[str] = [a.name for a in self.agent_list]
         self._agents_by_name: Dict[str, Agent] = {a.name: a for a in self.agent_list}
 
         # AEC required properties
+        # Add target to the agent cycle so it acts after all agents
         self.possible_agents = self.agents.copy()
+        if not self.no_target:
+            self.possible_agents.append("_target")
+        
         self.agent_selection = self.possible_agents[0] if self.possible_agents else None
         self.rewards = {agent: 0 for agent in self.possible_agents}
         self.terminations = {agent: False for agent in self.possible_agents}
@@ -152,6 +201,11 @@ class GridWorldEnvMultiAgent(AECEnv):
         # Per-agent spaces (AEC format)
         self.action_spaces = {a.name: a.get_action_space() if hasattr(a, 'get_action_space') else a.action_space for a in self.agent_list}
         self.observation_spaces = {a.name: a.get_observation_space() if hasattr(a, 'get_observation_space') else a.observation_space for a in self.agent_list}
+        
+        # Add dummy action/observation space for target (it doesn't use them but needed for AEC)
+        if not self.no_target:
+            self.action_spaces["_target"] = spaces.Discrete(1)  # Dummy action space
+            self.observation_spaces["_target"] = spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)  # Dummy obs space
         
         # AEC properties for compatibility
         self.action_space = self.action_spaces
@@ -302,6 +356,10 @@ class GridWorldEnvMultiAgent(AECEnv):
         Returns:
             dict: Observation containing agent location, FOV obstacles, and optionally target location
         '''
+        # Handle target observation (dummy)
+        if agent == "_target":
+            return np.array([0.0], dtype=np.float32)
+        
         if agent not in self._agents_by_name:
             raise ValueError(f"Agent {agent} not found")
             
@@ -343,6 +401,15 @@ class GridWorldEnvMultiAgent(AECEnv):
         agent = self.agent_selection
         if agent is None:
             return None, None, None, None, None
+        
+        # Handle target turn (returns dummy values)
+        if agent == "_target":
+            observation = self.observe(agent)
+            reward = self.rewards.get(agent, 0.0)
+            termination = self.terminations.get(agent, False)
+            truncation = self.truncations.get(agent, False)
+            info = {}
+            return observation, reward, termination, truncation, info
             
         observation = self.observe(agent)
         reward = self.rewards[agent]
@@ -364,7 +431,7 @@ class GridWorldEnvMultiAgent(AECEnv):
         AEC step method - takes action for current agent and advances to next agent.
         
         Args:
-            action: Integer action (0-4) for the current agent
+            action: Integer action (0-4) for the current agent, or None for target
             
         Returns:
             None (AEC step returns None)
@@ -377,6 +444,20 @@ class GridWorldEnvMultiAgent(AECEnv):
             
         agent = self.agent_selection
         if agent is None:
+            return
+        
+        # Check if current "agent" is actually the target
+        if agent == "_target":
+            # Move the target
+            if self.target is not None:
+                self.target.step(self.step_counter, self._obstacles, self._is_cell_obstacle)
+            # Target doesn't receive rewards
+            self.rewards["_target"] = 0.0
+            self.terminations["_target"] = False
+            self.truncations["_target"] = self.step_counter >= self.max_steps
+            # Advance to next agent
+            self._accumulate_rewards()
+            self.agent_selection = self._agent_selector.next()
             return
             
         self.step_counter += 1
@@ -437,9 +518,7 @@ class GridWorldEnvMultiAgent(AECEnv):
             fov_map = obs["obstacles_fov"]
             self._print_fov_display(agent, fov_map, f"(action {action})")
 
-        # Move target if it exists
-        if self.target is not None:
-            self.target.step(self.step_counter, self._obstacles, self._is_cell_obstacle)
+        # Note: Target now moves as part of the agent cycle (after all agents have acted)
         
         # Calculate individual reward for this agent
         reward = 0.0
@@ -452,13 +531,13 @@ class GridWorldEnvMultiAgent(AECEnv):
         self._agent_detects_target = {}
         self._target_detects_agent = {}
         
-        # Check if this agent reached the target (termination condition)
+        # Check if this agent reached the target (no longer terminates, just penalizes)
         reached_target = False
         if not self.no_target and self.target is not None:
             reached_target = np.array_equal(agent_obj.location, self.target.location)
         
         if reached_target:
-            reward += -1.0  # Penalty for reaching target (agents should observe, not intercept)
+            reward += -3.0 * self.lambda_fov  # Penalty for reaching target (agents should observe, not intercept)
         else:
             # Check if this agent detects target (only for agents with FOV)
             # For ObserverAgent, check actual observation (accounts for probabilistic detection)
@@ -484,7 +563,7 @@ class GridWorldEnvMultiAgent(AECEnv):
                 target_detects = self._is_agent_in_target_fov(agent_obj)
             self._target_detects_agent[agent] = target_detects
                 
-            # Penalty: -lambda if agent is in target's FOV
+            # Penalty: -lambda if agent is in target's FOV - we could call lambda the stealth factor
             if target_detects:
                 reward -= self.lambda_fov
             # Reward: (1-lambda) if target is in agent's FOV
@@ -509,7 +588,8 @@ class GridWorldEnvMultiAgent(AECEnv):
         self._last_reward = reward
         
         # Check termination/truncation for this agent
-        self.terminations[agent] = reached_target
+        # Note: Reaching target no longer terminates the episode, just gives penalty
+        self.terminations[agent] = False
         self.truncations[agent] = self.step_counter >= self.max_steps
 
         # Advance to next agent
@@ -599,10 +679,10 @@ class GridWorldEnvMultiAgent(AECEnv):
                 )
                 pygame.draw.rect(canvas, OBSTACLE_COLOR, rect)
         
-        # Visual obstacles (semi-transparent light gray - blocks view but not movement)
+        # Visual obstacles (semi-transparent light blue - blocks view but not movement)
         if self._visual_obstacles:
-            VISUAL_OBSTACLE_COLOR = (180, 180, 180, 128)  # Light gray with alpha
-            VISUAL_OBSTACLE_STRIPE_COLOR = (140, 140, 140, 180)  # Darker gray for stripes
+            VISUAL_OBSTACLE_COLOR = (150, 200, 240, 150)  # Light blue with alpha
+            VISUAL_OBSTACLE_STRIPE_COLOR = (100, 160, 220, 200)  # Darker blue for stripes
             
             for (ox, oy, ow, oh) in self._visual_obstacles:
                 # Create temporary surface for this obstacle
@@ -1164,10 +1244,10 @@ class GridWorldEnvMultiAgent(AECEnv):
         """Generate rectangular visual obstacles within grid bounds.
         
         Visual obstacles block ObserverAgent view but do not block movement.
-        They are placed independently of physical obstacles.
+        They can overlap with physical obstacles, agents, and target, but not with each other.
         """
         attempts = 0
-        max_attempts = count * 10
+        max_attempts = count * 20
         created = 0
         while created < count and attempts < max_attempts:
             attempts += 1
@@ -1180,12 +1260,25 @@ class GridWorldEnvMultiAgent(AECEnv):
             # Prefer small obstacles (same size distribution as physical obstacles)
             ow = int(np.random.randint(1, min(4, max_w) + 1))
             oh = int(np.random.randint(1, min(4, max_h) + 1))
-            # Avoid duplicates
+            
             rect = (ox, oy, ow, oh)
+            
+            # Check for exact duplicate
             if rect in self._visual_obstacles:
                 continue
-            self._visual_obstacles.append(rect)
-            created += 1
+            
+            # Check for overlap with other visual obstacles
+            overlaps = False
+            for (vis_ox, vis_oy, vis_ow, vis_oh) in self._visual_obstacles:
+                # Check if rectangles overlap using standard rectangle intersection test
+                if not (ox + ow <= vis_ox or vis_ox + vis_ow <= ox or
+                        oy + oh <= vis_oy or vis_oy + vis_oh <= oy):
+                    overlaps = True
+                    break
+            
+            if not overlaps:
+                self._visual_obstacles.append(rect)
+                created += 1
 
 
 if __name__ == "__main__":
