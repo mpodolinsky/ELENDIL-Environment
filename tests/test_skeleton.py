@@ -8,7 +8,7 @@ Fill in the actual test methods as needed.
 import unittest
 import numpy as np
 import pygame
-from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+from elendil.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
 from agents.agents import Agent, FOVAgent
 from agents.observer_agent import ObserverAgent
 from agents.target import Target

@@ -1,6 +1,6 @@
 # ELENDIL - Environment for Limited-Exposure Navigation for Diverse Intercommunicative Learners
 
-A multi-agent reinforcement learning environment built with PettingZoo's AEC (Agent-Environment-Cycle) interface, featuring field-of-view (FOV) based observations and dynamic target tracking.
+A multi-agent reinforcement learning environment built with PettingZoo's AEC (Agent-Environment-Cycle) and Parallel APIs, featuring field-of-view (FOV) based observations and dynamic target tracking.
 
 ## Overview
 
@@ -9,13 +9,14 @@ This environment simulates a grid-based world where multiple agents navigate to 
 ## Features
 
 ### Environment Features
-- **Multi-Agent Sequential Stepping**: Agents take turns acting using PettingZoo's AEC interface
+- **Dual API Support**: Both AEC (sequential) and Parallel (simultaneous) agent interactions
 - **Dynamic Target Movement**: Moving target that changes position each step
 - **Dual Obstacle System**: 
   - Physical obstacles (dark gray) block agent movement
   - Visual obstacles (light blue with stripes) block ObserverAgent view but not movement (simulating buildings/cover)
 - **FOV-Based Observations**: Agents see only their local field-of-view, not the entire grid
 - **Individual Rewards**: Each agent receives rewards based on their own FOV detection
+- **Fair Reward Attribution**: In Parallel API, agents are rewarded before target moves
 - **Flexible Agent Configuration**: 
   - Configure agents via YAML files or inline dictionaries
   - Automatic agent type detection
@@ -111,50 +112,51 @@ When detection fails, the target cell appears as empty (0) instead of showing th
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd HA-SPO2V-Env
+cd ELENDIL
 
-# Install dependencies
-pip install pettingzoo gymnasium pygame pyyaml
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies (this will install elendil package in editable mode)
+pip install -e .
 ```
+
+**Note**: The `pip install -e .` command installs the `elendil` package in development mode, making it available for import as `from elendil.envs.grid_world_multi_agent import ...`
 
 ### Basic Usage
 
-#### Option 1: Configuration-Based (Recommended)
+The environment supports both **AEC (Sequential)** and **Parallel** APIs. Choose based on your needs:
+
+#### AEC API (Sequential Agent Interactions)
 
 ```python
 import yaml
-from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+from elendil.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
 
-# Load agent configurations from YAML files
-with open("configs/ground_agent.yaml") as f:
+# Load configurations
+with open("configs/agent_configs/ground_agent.yaml") as f:
     ground_agent_config = yaml.safe_load(f)
-    ground_agent_config["color"] = tuple(ground_agent_config["color"])
 
-with open("configs/air_observer_agent.yaml") as f:
+with open("configs/agent_configs/air_observer_agent.yaml") as f:
     air_observer_config = yaml.safe_load(f)
-    air_observer_config["color"] = tuple(air_observer_config["color"])
-    air_observer_config["target_detection_probs"] = tuple(air_observer_config["target_detection_probs"])
 
-# Load target configuration
-with open("configs/target_config.yaml") as f:
+with open("configs/target_configs/target_config.yaml") as f:
     target_config = yaml.safe_load(f)
 
-# Create environment - agents will be auto-instantiated from configs!
+# Create AEC environment - agents take turns sequentially
 env = GridWorldEnvMultiAgent(
     agents=[ground_agent_config, air_observer_config],
     size=15,
     render_mode="human",
-    show_fov_display=True,
     enable_obstacles=True,
     num_obstacles=3,
-    num_visual_obstacles=2,
     target_config=target_config
 )
 
-# Reset environment
 env.reset()
 
-# Run episode
+# AEC API: Sequential agent interactions
 for agent in env.agent_iter():
     observation, reward, termination, truncation, info = env.last()
     
@@ -168,10 +170,65 @@ for agent in env.agent_iter():
 env.close()
 ```
 
+#### Parallel API (Simultaneous Agent Interactions) - **NEW!**
+
+```python
+import yaml
+from elendil.envs.grid_world_multi_agent import GridWorldEnvParallel
+
+# Load configurations
+with open("configs/agent_configs/ground_agent.yaml") as f:
+    ground_agent_config = yaml.safe_load(f)
+
+with open("configs/agent_configs/air_observer_agent.yaml") as f:
+    air_observer_config = yaml.safe_load(f)
+
+with open("configs/target_configs/target_config.yaml") as f:
+    target_config = yaml.safe_load(f)
+
+# Create Parallel environment - all agents act simultaneously
+env = GridWorldEnvParallel(
+    agents=[ground_agent_config, air_observer_config],
+    size=15,
+    render_mode="human",
+    enable_obstacles=True,
+    num_obstacles=3,
+    target_config=target_config
+)
+
+observations, infos = env.reset()
+
+# Parallel API: Simultaneous agent interactions
+while env.agents:
+    # Generate actions for all agents
+    actions = {agent: env.action_spaces[agent].sample() for agent in env.agents}
+    
+    # All agents act simultaneously
+    observations, rewards, terminations, truncations, infos = env.step(actions)
+
+env.close()
+```
+
+#### API Comparison
+
+| Feature | AEC API | Parallel API |
+|---------|---------|--------------|
+| **Agent Interaction** | Sequential (turn-based) | Simultaneous |
+| **Performance** | Sequential overhead | Better performance |
+| **Integration** | PettingZoo standard | Compatible with many RL frameworks |
+| **Reward Timing** | Target moves after each agent | Agents rewarded before target moves |
+| **Use Cases** | Turn-based games, strict ordering | Real-time scenarios, natural interactions |
+
+**Key Benefits of Parallel API:**
+- More natural agent interactions
+- Better performance (no sequential overhead)  
+- Easier integration with many RL frameworks
+- Fairer reward attribution (agents rewarded before target moves)
+
 #### Option 2: Inline Configuration
 
 ```python
-from gymnasium_env.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
+from elendil.envs.grid_world_multi_agent import GridWorldEnvMultiAgent
 
 # Define agents as configuration dictionaries
 agent_configs = [
@@ -403,36 +460,144 @@ This environment is designed for:
 ## Project Structure
 
 ```
-HA-SPO2V-Env/
-├── gymnasium_env/
+ELENDIL/
+├── elendil/                              # Main package
 │   ├── envs/
-│   │   ├── grid_world_multi_agent.py  # Main AEC environment
-│   │   └── test.py                    # Test script (uses YAML configs)
-│   └── wrappers/                      # Environment wrappers
-├── agents/
-│   ├── agents.py                      # BaseAgent, FOVAgent classes
-│   ├── observer_agent.py              # ObserverAgent with flight levels
-│   ├── special_agents.py              # GlobalViewAgent, TelepathicAgent
-│   └── target.py                      # Target class definition
-├── configs/                           # YAML configuration files
-│   ├── ground_agent.yaml              # FOVAgent configuration
-│   ├── air_observer_agent.yaml        # ObserverAgent configuration
-│   ├── agent_config.yaml              # Legacy agent config
-│   └── target_config.yaml             # Target configuration
-├── tests/                             # Unit test suite
-├── videos/                            # Recorded episodes
-├── AGENT_CONFIG_GUIDE.md              # Detailed configuration guide
-├── example_config_based.py            # Configuration examples
-├── demo_capabilities.py               # Capability demonstration script
-└── visualize_obstacles.py             # Obstacle generation visualization
+│   │   ├── grid_world_multi_agent.py     # Both AEC and Parallel environments
+│   │   ├── legacy/                       # Legacy environment implementations
+│   │   └── __init__.py
+│   ├── wrappers/                         # Environment wrappers
+│   └── __init__.py
+├── agents/                               # Agent implementations
+│   ├── agents.py                         # BaseAgent, FOVAgent classes
+│   ├── observer_agent.py                 # ObserverAgent with flight levels
+│   ├── special_agents.py                 # GlobalViewAgent, TelepathicAgent
+│   ├── target.py                         # Target class definition
+│   └── __init__.py
+├── configs/                              # Configuration files
+│   ├── agent_configs/                    # Agent configuration YAML files
+│   ├── env_configs/                      # Environment configuration files
+│   └── target_configs/                   # Target configuration files
+├── tests/                                # Test files and scripts
+│   ├── test_aec.py                       # AEC API test script
+│   ├── test_parallel.py                  # Parallel API test script
+│   ├── test_observer_agent.py            # ObserverAgent tests
+│   ├── test_modular_agents.py            # Modular agent tests
+│   ├── demo_capabilities.py              # Capability demonstration
+│   ├── example_config_based.py           # Configuration examples
+│   ├── visualize_obstacles.py            # Obstacle visualization
+│   └── AGENT_CONFIG_GUIDE.md             # Configuration guide
+├── examples/                             # Example scripts and demos
+│   └── api_comparison_demo.py            # AEC vs Parallel API comparison
+├── docs/                                 # Documentation and assets
+│   ├── q_learning_training_rewards.png   # Training results
+│   └── TODO.md                           # Project TODO list
+├── images/                               # Image assets
+│   └── obstacle_examples/                # Obstacle visualization examples
+├── pyproject.toml                        # Package configuration
+├── requirements.txt                      # Python dependencies
+└── README.md                             # This file
 ```
 
 ## Testing
 
-Run the test script to see the environment in action:
+### Test Both APIs
+
+Run the comparison script to see both AEC and Parallel APIs in action:
+
+**From project root:**
+```bash
+python examples/api_comparison_demo.py
+```
+
+**From examples directory:**
+```bash
+cd examples
+python api_comparison_demo.py
+```
+
+### Test Individual APIs
+
+**AEC API (Sequential):**
+
+From project root:
+```bash
+python tests/test_aec.py
+```
+
+From tests directory:
+```bash
+cd tests
+python test_aec.py
+```
+
+**Parallel API (Simultaneous):**
+
+From project root:
+```bash
+python tests/test_parallel.py
+```
+
+From tests directory:
+```bash
+cd tests
+python test_parallel.py
+```
+
+### Virtual Environment Setup
+
+Make sure you have the `elendil` package installed in your virtual environment:
 
 ```bash
-python gymnasium_env/envs/test.py
+# Activate your virtual environment
+source .venv/bin/activate
+
+# Install the package in editable mode
+pip install -e .
+
+# Verify installation
+python -c "import elendil; print('elendil package installed successfully!')"
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**1. ModuleNotFoundError: No module named 'elendil'**
+
+This error occurs when the `elendil` package is not installed in your virtual environment. Solution:
+
+```bash
+# Make sure you're in the project root directory
+cd /path/to/ELENDIL
+
+# Activate your virtual environment
+source .venv/bin/activate
+
+# Install the package in editable mode
+pip install -e .
+
+# Verify installation
+python -c "import elendil; print('Success!')"
+```
+
+**2. FileNotFoundError when running from elendil/envs directory**
+
+When running scripts from the `elendil/envs/` directory, the config file paths are automatically adjusted. If you get file not found errors, make sure you're running from the correct directory or the config files exist in the expected locations.
+
+**3. Virtual Environment Issues**
+
+If you have multiple virtual environments (`.venv`, `.venv_new`, etc.), make sure you're using the correct one:
+
+```bash
+# Check which Python you're using
+which python
+
+# Check which packages are installed
+pip list | grep elendil
+
+# If elendil is not found, install it
+pip install -e .
 ```
 
 ## Contributing
