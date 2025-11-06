@@ -634,8 +634,19 @@ class GridWorldEnvMultiAgent(AECEnv):
             pygame.quit()
 
     def render(self):
+        """
+        Render the environment.
+        
+        Returns:
+            numpy array if render_mode is "rgb_array", None otherwise
+        """
         if self.render_mode == "rgb_array":
             return self._render_frame()
+        elif self.render_mode == "human":
+            self._render_frame()
+            return None
+        else:
+            return None
 
     def _render_frame(self):
         # Initialize pygame for both human and rgb_array modes
@@ -1563,6 +1574,30 @@ class GridWorldEnvParallel(ParallelEnv):
 
         return observations, infos
 
+    def action_space(self, agent: str):
+        """
+        Get the action space for a specific agent.
+        
+        Args:
+            agent: Agent name
+            
+        Returns:
+            Action space for the agent
+        """
+        return self.action_spaces[agent]
+    
+    def observation_space(self, agent: str):
+        """
+        Get the observation space for a specific agent.
+        
+        Args:
+            agent: Agent name
+            
+        Returns:
+            Observation space for the agent
+        """
+        return self.observation_spaces[agent]
+
     def step(self, actions: Dict[str, int]):
         """
         Parallel step method - all agents act simultaneously.
@@ -2010,8 +2045,19 @@ class GridWorldEnvParallel(ParallelEnv):
             pygame.quit()
 
     def render(self):
+        """
+        Render the environment.
+        
+        Returns:
+            numpy array if render_mode is "rgb_array", None otherwise
+        """
         if self.render_mode == "rgb_array":
             return self._render_frame()
+        elif self.render_mode == "human":
+            self._render_frame()
+            return None
+        else:
+            return None
 
     def _render_frame(self):
         # Initialize pygame for both human and rgb_array modes

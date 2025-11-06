@@ -1,6 +1,6 @@
 # ELENDIL - Environment for Limited-Exposure Navigation for Diverse Intercommunicative Learners
 
-A multi-agent reinforcement learning environment built with PettingZoo's AEC (Agent-Environment-Cycle) interface, featuring field-of-view (FOV) based observations and dynamic target tracking.
+A multi-agent reinforcement learning environment built with PettingZoo's AEC (Agent-Environment-Cycle) and Parallel APIs, featuring field-of-view (FOV) based observations and dynamic target tracking.
 
 ## Overview
 
@@ -9,13 +9,14 @@ This environment simulates a grid-based world where multiple agents navigate to 
 ## Features
 
 ### Environment Features
-- **Multi-Agent Sequential Stepping**: Agents take turns acting using PettingZoo's AEC interface
+- **Dual API Support**: Both AEC (sequential) and Parallel (simultaneous) agent interactions
 - **Dynamic Target Movement**: Moving target that changes position each step
 - **Dual Obstacle System**: 
   - Physical obstacles (dark gray) block agent movement
   - Visual obstacles (light blue with stripes) block ObserverAgent view but not movement (simulating buildings/cover)
 - **FOV-Based Observations**: Agents see only their local field-of-view, not the entire grid
 - **Individual Rewards**: Each agent receives rewards based on their own FOV detection
+- **Fair Reward Attribution**: In Parallel API, agents are rewarded before target moves
 - **Flexible Agent Configuration**: 
   - Configure agents via YAML files or inline dictionaries
   - Automatic agent type detection
@@ -117,9 +118,11 @@ cd ELENDIL
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
+# Install dependencies (this will install elendil package in editable mode)
 pip install -e .
 ```
+
+**Note**: The `pip install -e .` command installs the `elendil` package in development mode, making it available for import as `from elendil.envs.grid_world_multi_agent import ...`
 
 ### Basic Usage
 
@@ -458,29 +461,42 @@ This environment is designed for:
 
 ```
 ELENDIL/
-├── elendil/
+├── elendil/                              # Main package
 │   ├── envs/
-│   │   ├── grid_world_multi_agent.py  # Both AEC and Parallel environments
-│   │   ├── test.py                    # AEC API test script
-│   │   ├── test_parallel.py           # Parallel API test script
-│   │   └── api_comparison_demo.py     # Side-by-side API comparison
-│   └── wrappers/                      # Environment wrappers
-├── agents/
-│   ├── agents.py                      # BaseAgent, FOVAgent classes
-│   ├── observer_agent.py              # ObserverAgent with flight levels
-│   ├── special_agents.py              # GlobalViewAgent, TelepathicAgent
-│   └── target.py                      # Target class definition
-├── configs/                           # YAML configuration files
-│   ├── ground_agent.yaml              # FOVAgent configuration
-│   ├── air_observer_agent.yaml        # ObserverAgent configuration
-│   ├── agent_config.yaml              # Legacy agent config
-│   └── target_config.yaml             # Target configuration
-├── tests/                             # Unit test suite
-├── videos/                            # Recorded episodes
-├── AGENT_CONFIG_GUIDE.md              # Detailed configuration guide
-├── example_config_based.py            # Configuration examples
-├── demo_capabilities.py               # Capability demonstration script
-└── visualize_obstacles.py             # Obstacle generation visualization
+│   │   ├── grid_world_multi_agent.py     # Both AEC and Parallel environments
+│   │   ├── legacy/                       # Legacy environment implementations
+│   │   └── __init__.py
+│   ├── wrappers/                         # Environment wrappers
+│   └── __init__.py
+├── agents/                               # Agent implementations
+│   ├── agents.py                         # BaseAgent, FOVAgent classes
+│   ├── observer_agent.py                 # ObserverAgent with flight levels
+│   ├── special_agents.py                 # GlobalViewAgent, TelepathicAgent
+│   ├── target.py                         # Target class definition
+│   └── __init__.py
+├── configs/                              # Configuration files
+│   ├── agent_configs/                    # Agent configuration YAML files
+│   ├── env_configs/                      # Environment configuration files
+│   └── target_configs/                   # Target configuration files
+├── tests/                                # Test files and scripts
+│   ├── test_aec.py                       # AEC API test script
+│   ├── test_parallel.py                  # Parallel API test script
+│   ├── test_observer_agent.py            # ObserverAgent tests
+│   ├── test_modular_agents.py            # Modular agent tests
+│   ├── demo_capabilities.py              # Capability demonstration
+│   ├── example_config_based.py           # Configuration examples
+│   ├── visualize_obstacles.py            # Obstacle visualization
+│   └── AGENT_CONFIG_GUIDE.md             # Configuration guide
+├── examples/                             # Example scripts and demos
+│   └── api_comparison_demo.py            # AEC vs Parallel API comparison
+├── docs/                                 # Documentation and assets
+│   ├── q_learning_training_rewards.png   # Training results
+│   └── TODO.md                           # Project TODO list
+├── images/                               # Image assets
+│   └── obstacle_examples/                # Obstacle visualization examples
+├── pyproject.toml                        # Package configuration
+├── requirements.txt                      # Python dependencies
+└── README.md                             # This file
 ```
 
 ## Testing
@@ -489,20 +505,99 @@ ELENDIL/
 
 Run the comparison script to see both AEC and Parallel APIs in action:
 
+**From project root:**
 ```bash
-python elendil/envs/api_comparison_demo.py
+python examples/api_comparison_demo.py
+```
+
+**From examples directory:**
+```bash
+cd examples
+python api_comparison_demo.py
 ```
 
 ### Test Individual APIs
 
 **AEC API (Sequential):**
+
+From project root:
 ```bash
-python elendil/envs/test.py
+python tests/test_aec.py
+```
+
+From tests directory:
+```bash
+cd tests
+python test_aec.py
 ```
 
 **Parallel API (Simultaneous):**
+
+From project root:
 ```bash
-python elendil/envs/test_parallel.py
+python tests/test_parallel.py
+```
+
+From tests directory:
+```bash
+cd tests
+python test_parallel.py
+```
+
+### Virtual Environment Setup
+
+Make sure you have the `elendil` package installed in your virtual environment:
+
+```bash
+# Activate your virtual environment
+source .venv/bin/activate
+
+# Install the package in editable mode
+pip install -e .
+
+# Verify installation
+python -c "import elendil; print('elendil package installed successfully!')"
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**1. ModuleNotFoundError: No module named 'elendil'**
+
+This error occurs when the `elendil` package is not installed in your virtual environment. Solution:
+
+```bash
+# Make sure you're in the project root directory
+cd /path/to/ELENDIL
+
+# Activate your virtual environment
+source .venv/bin/activate
+
+# Install the package in editable mode
+pip install -e .
+
+# Verify installation
+python -c "import elendil; print('Success!')"
+```
+
+**2. FileNotFoundError when running from elendil/envs directory**
+
+When running scripts from the `elendil/envs/` directory, the config file paths are automatically adjusted. If you get file not found errors, make sure you're running from the correct directory or the config files exist in the expected locations.
+
+**3. Virtual Environment Issues**
+
+If you have multiple virtual environments (`.venv`, `.venv_new`, etc.), make sure you're using the correct one:
+
+```bash
+# Check which Python you're using
+which python
+
+# Check which packages are installed
+pip list | grep elendil
+
+# If elendil is not found, install it
+pip install -e .
 ```
 
 ## Contributing

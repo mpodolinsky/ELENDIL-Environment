@@ -9,13 +9,16 @@ from elendil.envs.grid_world_multi_agent import GridWorldEnvMultiAgent, GridWorl
 
 def load_agent_configs():
     """Load agent configurations from YAML files."""
-    with open("configs/agent_configs/ground_agent.yaml", "r") as f:
+    import os
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    with open(os.path.join(base_dir, "configs", "agent_configs", "ground_agent.yaml"), "r") as f:
         ground_agent_config = yaml.safe_load(f)
     
-    with open("configs/agent_configs/air_observer_agent.yaml", "r") as f:
+    with open(os.path.join(base_dir, "configs", "agent_configs", "air_observer_agent.yaml"), "r") as f:
         air_observer_config = yaml.safe_load(f)
     
-    with open("configs/target_configs/target_config.yaml", "r") as f:
+    with open(os.path.join(base_dir, "configs", "target_configs", "target_config.yaml"), "r") as f:
         target_config = yaml.safe_load(f)
     
     return [ground_agent_config, air_observer_config], target_config
