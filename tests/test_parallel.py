@@ -36,7 +36,7 @@ if __name__ == "__main__":
         air_observer_config
     ]
 
-    size = int(20)
+    size = int(7)
     record = False
 
     # Ensure video folder exists
@@ -58,7 +58,8 @@ if __name__ == "__main__":
     show_fov_display=False,
     target_config=target_config,
     max_steps=500,
-    lambda_fov=0.5)
+    lambda_fov=0.5,
+    death_on_sight=True)
 
     if record: 
         # Wrap with RecordVideo (requires rgb_array render_mode)

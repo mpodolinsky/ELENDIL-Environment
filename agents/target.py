@@ -128,55 +128,55 @@ class Target:
                         self._last_move_step = step_count
                         break
     
-    def get_triangle_points(self, cell_size: int, offset: Tuple[int, int] = (0, 0)) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
+    def get_triangle_points(self, cell_size: float, offset: Tuple[int, int] = (0, 0)) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
         """
         Get the three points of the triangle for rendering.
         
         Args:
-            cell_size: Size of each grid cell in pixels
+            cell_size: Size of each grid cell in pixels (can be float)
             offset: Offset for rendering position
             
         Returns:
             Tuple of three (x, y) coordinate tuples for the triangle vertices
         """
-        # Convert grid position to pixel position
-        center_x = self.location[0] * cell_size + cell_size // 2 + offset[0]
-        center_y = self.location[1] * cell_size + cell_size // 2 + offset[1]
+        # Convert grid position to pixel position (using float arithmetic like agents)
+        center_x = (self.location[0] + 0.5) * cell_size + offset[0]
+        center_y = (self.location[1] + 0.5) * cell_size + offset[1]
         
         # Triangle size (smaller than cell)
         triangle_size = cell_size * 0.6
         
-        # Calculate triangle vertices (pointing up)
-        point1 = (center_x, center_y - triangle_size // 2)  # Top point
-        point2 = (center_x - triangle_size // 2, center_y + triangle_size // 2)  # Bottom left
-        point3 = (center_x + triangle_size // 2, center_y + triangle_size // 2)  # Bottom right
+        # Calculate triangle vertices (pointing up) - convert to int at the end
+        point1 = (int(center_x), int(center_y - triangle_size / 2))  # Top point
+        point2 = (int(center_x - triangle_size / 2), int(center_y + triangle_size / 2))  # Bottom left
+        point3 = (int(center_x + triangle_size / 2), int(center_y + triangle_size / 2))  # Bottom right
         
         return point1, point2, point3
     
-    def get_box_coordinates(self, cell_size: int, offset: Tuple[int, int] = (0, 0)) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
+    def get_box_coordinates(self, cell_size: float, offset: Tuple[int, int] = (0, 0)) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
         """
         Get the four corner coordinates of the box around the target.
         
         Args:
-            cell_size: Size of each grid cell in pixels
+            cell_size: Size of each grid cell in pixels (can be float)
             offset: Offset for rendering position
             
         Returns:
             Tuple of four (x, y) coordinate tuples for the box corners (top-left, top-right, bottom-right, bottom-left)
         """
-        # Convert grid position to pixel position
-        center_x = self.location[0] * cell_size + cell_size // 2 + offset[0]
-        center_y = self.location[1] * cell_size + cell_size // 2 + offset[1]
+        # Convert grid position to pixel position (using float arithmetic like agents)
+        center_x = (self.location[0] + 0.5) * cell_size + offset[0]
+        center_y = (self.location[1] + 0.5) * cell_size + offset[1]
         
         # Calculate box size based on box_cells and scale
-        box_pixel_size = int(cell_size * self.box_cells * self.box_scale)
-        half_size = box_pixel_size // 2
+        box_pixel_size = cell_size * self.box_cells * self.box_scale
+        half_size = box_pixel_size / 2
         
-        # Calculate box corners (centered on target)
-        top_left = (center_x - half_size, center_y - half_size)
-        top_right = (center_x + half_size, center_y - half_size)
-        bottom_right = (center_x + half_size, center_y + half_size)
-        bottom_left = (center_x - half_size, center_y + half_size)
+        # Calculate box corners (centered on target) - convert to int at the end
+        top_left = (int(center_x - half_size), int(center_y - half_size))
+        top_right = (int(center_x + half_size), int(center_y - half_size))
+        bottom_right = (int(center_x + half_size), int(center_y + half_size))
+        bottom_left = (int(center_x - half_size), int(center_y + half_size))
         
         return top_left, top_right, bottom_right, bottom_left
     
