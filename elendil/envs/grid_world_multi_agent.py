@@ -10,7 +10,7 @@ from pettingzoo import AECEnv
 from pettingzoo.utils import AgentSelector
 from pettingzoo.utils.env import ParallelEnv
 
-from typing import Optional, List, Dict, Union, Any
+from typing import Optional, List, Dict, Union, Any, Tuple
 
 from agents.agents import Agent, FOVAgent
 from agents.observer_agent import ObserverAgent
@@ -1318,7 +1318,9 @@ class GridWorldEnvParallel(ParallelEnv):
                                            "fov_base_size": int, "max_altitude": int, 
                                            "target_detection_probs": tuple, ...}
          If None, creates 2 default FOVAgents.
-     - target_config: Configuration dictionary for the target
+     - target_config: Configuration dictionary for a single target, or a list of dictionaries for multiple targets.
+                      Each target config can specify: name, color, movement_speed, movement_range, 
+                      smooth_movement, box_cells, outline_width, box_scale
      - enable_obstacles: Whether to enable obstacles in the environment
      - num_obstacles: Number of physical obstacles to generate (block movement)
      - num_visual_obstacles: Number of visual obstacles to generate (block ObserverAgent view only)
@@ -1350,7 +1352,7 @@ class GridWorldEnvParallel(ParallelEnv):
         # Agents and target settings
         no_target=False,
         agents: Optional[List[Union[Dict, 'Agent']]] = None,
-        target_config: Optional[Dict] = None,
+        target_config: Optional[Union[Dict, List[Dict]]] = None,
 
         # Obstacles
         enable_obstacles: bool = False,
@@ -1484,22 +1486,46 @@ class GridWorldEnvParallel(ParallelEnv):
         if self.intrinsic:
             self._visit_counts: Dict[str, np.ndarray] = {a.name: np.zeros((self.size, self.size), dtype=int) for a in self.agent_list}
 
-        # Initialize target
+        # Initialize targets (support single or multiple targets)
         if not self.no_target:
-            if target_config is None: # If no target config is provided, use default values
+            self.targets: List[Target] = []
+            
+            if target_config is None:
+                # Default: create one target with default values
                 target_config = {}
-            self.target = Target(
-                name=target_config.get('name', 'target'),
-                color=target_config.get('color', (255, 0, 0)),
-                size=self.size,
-                movement_speed=target_config.get('movement_speed', 0.3),
-                movement_range=target_config.get('movement_range', 1),
-                smooth_movement=target_config.get('smooth_movement', True),
-                box_cells=target_config.get('box_cells', 3),
-                outline_width=target_config.get('outline_width', 2),
-                box_scale=target_config.get('box_scale', 1.0)
-            )
+            
+            # Handle both single dict and list of dicts
+            if isinstance(target_config, dict):
+                # Single target config
+                target_configs = [target_config]
+            elif isinstance(target_config, list):
+                # Multiple target configs
+                target_configs = target_config
+            else:
+                raise ValueError(f"target_config must be a dict or list of dicts, got {type(target_config)}")
+            
+            # Create targets from configs
+            for idx, cfg in enumerate(target_configs):
+                if not isinstance(cfg, dict):
+                    raise ValueError(f"Each target config must be a dict, got {type(cfg)} at index {idx}")
+                
+                target = Target(
+                    name=cfg.get('name', f'target_{idx}'),
+                    color=cfg.get('color', (255, 0, 0)),
+                    size=self.size,
+                    movement_speed=cfg.get('movement_speed', 0.3),
+                    movement_range=cfg.get('movement_range', 1),
+                    smooth_movement=cfg.get('smooth_movement', True),
+                    box_cells=cfg.get('box_cells', 3),
+                    outline_width=cfg.get('outline_width', 2),
+                    box_scale=cfg.get('box_scale', 1.0)
+                )
+                self.targets.append(target)
+            
+            # For backward compatibility, keep self.target pointing to first target (or None)
+            self.target = self.targets[0] if self.targets else None
         else:
+            self.targets = []
             self.target = None # If no target is needed, set target to None
 
         self.window = None
@@ -1543,7 +1569,7 @@ class GridWorldEnvParallel(ParallelEnv):
         # Sample positions not inside obstacles (only physical obstacles block spawn)
         forbidden = self._cells_covered_by_obstacles()
         choices = [i for i in range(self.size * self.size) if (i // self.size, i % self.size) not in forbidden]
-        num_needed = len(self.agent_list) + (0 if self.no_target else 1)
+        num_needed = len(self.agent_list) + (0 if self.no_target else len(self.targets))
         
         if len(choices) < num_needed:
             # fallback: ignore obstacles if too dense
@@ -1554,14 +1580,19 @@ class GridWorldEnvParallel(ParallelEnv):
         for i, a in enumerate(self.agent_list):
             self._update_agent_location(a, np.array([coords[i] // self.size, coords[i] % self.size], dtype=int))
         
-        # Initialize or reset the target
+        # Initialize or reset the targets
         if self.no_target:
+            self.targets = []
             self.target = None
         else:
-            t_idx = len(self.agent_list)  # The index after all agents
-            target_position = (coords[t_idx] // self.size, coords[t_idx] % self.size)
-            if self.target is not None:
-                self.target.reset(target_position)
+            # Reset all targets to new positions
+            for idx, target in enumerate(self.targets):
+                t_idx = len(self.agent_list) + idx  # Index after all agents
+                target_position = (coords[t_idx] // self.size, coords[t_idx] % self.size)
+                target.reset(target_position)
+            
+            # For backward compatibility, keep self.target pointing to first target
+            self.target = self.targets[0] if self.targets else None
 
         if self.intrinsic: # Counting visits to cells if intrinsic exploration is enabled
             for a in self.agent_list:
@@ -1626,7 +1657,8 @@ class GridWorldEnvParallel(ParallelEnv):
         # Prepare environment state for agent steps
         env_state = {
             "agents": self.agent_list,
-            "target": self.target,
+            "target": self.target,  # For backward compatibility
+            "targets": self.targets,  # New: list of all targets
             "obstacles": self._obstacles,
             "visual_obstacles": self._visual_obstacles,
             "grid_size": self.size
@@ -1694,34 +1726,40 @@ class GridWorldEnvParallel(ParallelEnv):
             if obstacle_collisions.get(agent_name, False):
                 reward += self.obstacle_collision_penalty
             
-            # Check if this agent reached the target (terminates the agent)
+            # Check if this agent reached any target (terminates the agent)
             reached_target = False
-            if not self.no_target and self.target is not None:
-                reached_target = np.array_equal(agent_obj.location, self.target.location)
+            if not self.no_target and self.targets:
+                for target in self.targets:
+                    if np.array_equal(agent_obj.location, target.location):
+                        reached_target = True
+                        break
             
             if reached_target:
                 reward += -5.0 * self.lambda_fov  # Penalty for reaching target
             else:
-                # Check if this agent detects target (only for agents with FOV)
+                # Check if this agent detects any target (only for agents with FOV)
                 agent_detects = False
                 if hasattr(agent_obj, 'fov_size'):
-                    # Get the agent's actual observation to check if target is visible
+                    # Get the agent's actual observation to check if any target is visible
                     obs = agent_obj.observe(env_state)
                     fov_map = obs["obstacles_fov"]
                     # Check if target (value 3) is in the observed FOV
                     agent_detects = np.any(fov_map == 3)
                 self._agent_detects_target[agent_name] = agent_detects
                 
-                # Check if target detects this agent
+                # Check if any target detects this agent
                 target_detects = False
-                if self.target is not None:
-                    target_detects = self._is_agent_in_target_fov(agent_obj)
+                if self.targets:
+                    for target in self.targets:
+                        if self._is_agent_in_target_fov(agent_obj, target):
+                            target_detects = True
+                            break
                 self._target_detects_agent[agent_name] = target_detects
                     
-                # Penalty: -lambda if agent is in target's FOV
+                # Penalty: -lambda if agent is in any target's FOV
                 if target_detects:
                     reward -= self.lambda_fov
-                # Reward: (1-lambda) if target is in agent's FOV
+                # Reward: (1-lambda) if any target is in agent's FOV
                 elif agent_detects:
                     reward += (1 - self.lambda_fov)
                 else:
@@ -1746,9 +1784,9 @@ class GridWorldEnvParallel(ParallelEnv):
             # Store termination status for rendering
             self.terminations[agent_name] = terminated
 
-        # NOW move the target (after all rewards calculated)
-        if self.target is not None:
-            self.target.step(self.step_counter, self._obstacles, self._is_cell_obstacle)
+        # NOW move all targets (after all rewards calculated)
+        for target in self.targets:
+            target.step(self.step_counter, self._obstacles, self._is_cell_obstacle)
 
         # Generate observations and infos for all agents
         observations = {}
@@ -1787,7 +1825,8 @@ class GridWorldEnvParallel(ParallelEnv):
         # Prepare environment state for agent observation
         env_state = {
             "agents": self.agent_list,
-            "target": self.target,
+            "target": self.target,  # For backward compatibility
+            "targets": self.targets,  # New: list of all targets
             "obstacles": self._obstacles,
             "visual_obstacles": self._visual_obstacles,
             "grid_size": self.size
@@ -1804,18 +1843,36 @@ class GridWorldEnvParallel(ParallelEnv):
                 "obstacles_fov": fov_obstacles
             }
             # Only include target coordinates if show_target_coords is True
-            if self.show_target_coords and self.target is not None:
-                obs["target"] = self.target.location
+            if self.show_target_coords and self.targets:
+                # Include all target locations as a list
+                obs["targets"] = np.array([target.location for target in self.targets])
+                # For backward compatibility, also include first target as "target"
+                obs["target"] = self.targets[0].location
             elif self.show_target_coords:
+                obs["targets"] = np.array([])
                 obs["target"] = np.array([-1, -1])
             return obs
 
     def _get_agent_info(self, agent_name: str):
         '''Get info for a specific agent'''
         info = {}
-        if self.target is not None and agent_name in self._agents_by_name:
+        if agent_name in self._agents_by_name:
             agent_obj = self._agents_by_name[agent_name]
-            info[f"distance_{agent_name}"] = np.linalg.norm(agent_obj.location - self.target.location, ord=1)
+            
+            # Include distances to all targets
+            if self.targets:
+                for idx, target in enumerate(self.targets):
+                    distance = np.linalg.norm(agent_obj.location - target.location, ord=1)
+                    if idx == 0:
+                        # For backward compatibility, first target uses the old key
+                        info[f"distance_{agent_name}"] = distance
+                    info[f"distance_{agent_name}_to_{target.name}"] = distance
+                
+                # Also include distance to closest target
+                distances = [np.linalg.norm(agent_obj.location - target.location, ord=1) for target in self.targets]
+                info[f"distance_{agent_name}_to_closest_target"] = min(distances) if distances else -1
+            else:
+                info[f"distance_{agent_name}"] = -1
         else:
             info[f"distance_{agent_name}"] = -1
         return info
@@ -1885,11 +1942,13 @@ class GridWorldEnvParallel(ParallelEnv):
                 fov_i = int(x - agent_x + offset)
                 fov_j = int(y - agent_y + offset)
                 
-                # Check if target is at this position
+                # Check if any target is at this position
                 target_present = False
-                if self.target is not None and (self.target.location[0] == x_int and self.target.location[1] == y_int):
-                    fov_map[fov_i, fov_j] = 3  # Mark target as 3
-                    target_present = True
+                for target in self.targets:
+                    if target.location[0] == x_int and target.location[1] == y_int:
+                        fov_map[fov_i, fov_j] = 3  # Mark target as 3
+                        target_present = True
+                        break
                 
                 # Check if another agent is at this position (only if no target)
                 if not target_present:
@@ -1908,26 +1967,31 @@ class GridWorldEnvParallel(ParallelEnv):
         
         return fov_map
     
-    def _is_agent_in_target_fov(self, agent: 'Agent') -> bool:
+    def _is_agent_in_target_fov(self, agent: 'Agent', target: Optional[Target] = None) -> bool:
         """
-        Check if an agent is within the target's field of view.
+        Check if an agent is within a target's field of view.
         
         Args:
             agent: The agent to check
+            target: The target to check against. If None, uses self.target (for backward compatibility)
             
         Returns:
             True if agent is in target's FOV, False otherwise
         """
-        if self.target is None:
+        # For backward compatibility, use self.target if no target provided
+        if target is None:
+            target = self.target
+        
+        if target is None:
             return False
         
         # Get target's FOV size (use box_cells as FOV size)
-        target_fov_size = self.target.box_cells
+        target_fov_size = target.box_cells
         if target_fov_size is None:
             target_fov_size = 3  # Default FOV size
         
         # Target's current position
-        target_x, target_y = self.target.location
+        target_x, target_y = target.location
         offset = target_fov_size // 2
         
         # Agent's position
@@ -2142,20 +2206,28 @@ class GridWorldEnvParallel(ParallelEnv):
                 
                 canvas.blit(temp_surface, (ox * pix_square, oy * pix_square))
 
-        # Target (only if spawned and exists)
-        if self.target is not None:
+        # Targets (draw all targets)
+        for target in self.targets:
             # Get triangle points from target (pass pix_square as float)
-            point1, point2, point3 = self.target.get_triangle_points(pix_square)
-            pygame.draw.polygon(canvas, self.target.color, [point1, point2, point3])
+            point1, point2, point3 = target.get_triangle_points(pix_square)
+            pygame.draw.polygon(canvas, target.color, [point1, point2, point3])
             
             # Draw target box outline
-            top_left, top_right, bottom_right, bottom_left = self.target.get_box_coordinates(pix_square)
+            top_left, top_right, bottom_right, bottom_left = target.get_box_coordinates(pix_square)
             box_points = [top_left, top_right, bottom_right, bottom_left, top_left]  # Close the polygon
-            pygame.draw.lines(canvas, self.target.color, False, box_points, self.target.outline_width)
+            pygame.draw.lines(canvas, target.color, False, box_points, target.outline_width)
             
-            # Draw detection dot if target detects any agent
-            if any(self._target_detects_agent.values()):
-                target_center = (self.target.location + 0.5) * pix_square
+            # Draw detection dot if this target detects any agent
+            # Check if any agent is detected by this specific target
+            target_detects = False
+            for agent_name in self._agents_by_name:
+                agent_obj = self._agents_by_name[agent_name]
+                if self._is_agent_in_target_fov(agent_obj, target):
+                    target_detects = True
+                    break
+            
+            if target_detects:
+                target_center = (target.location + 0.5) * pix_square
                 dot_center = target_center + np.array([0, -pix_square * 0.6])  # Position higher above target
                 pygame.draw.circle(canvas, (255, 255, 0), dot_center.astype(int), int(pix_square / 8))  # Yellow dot
 
@@ -2410,11 +2482,12 @@ class GridWorldEnvParallel(ParallelEnv):
                 agent_text = font_medium.render(agent_info, True, agent.color)
                 canvas.blit(agent_text, (10, y_offset + i * 20))
             
-            # Target information
-            if self.target is not None:
-                target_info = f"Target: ({self.target.location[0]}, {self.target.location[1]})"
-                target_text = font_medium.render(target_info, True, self.target.color)
-                canvas.blit(target_text, (10, y_offset + len(self.agent_list) * 20))
+            # Target information (show all targets)
+            target_y_offset = y_offset + len(self.agent_list) * 20
+            for idx, target in enumerate(self.targets):
+                target_info = f"{target.name}: ({target.location[0]}, {target.location[1]})"
+                target_text = font_medium.render(target_info, True, target.color)
+                canvas.blit(target_text, (10, target_y_offset + idx * 20))
             
             # Lambda FOV parameter
             lambda_text = font_small.render(f"λ FOV: {self.lambda_fov:.2f}", True, TEXT_COLOR)
@@ -2422,6 +2495,480 @@ class GridWorldEnvParallel(ParallelEnv):
             
             # FOV legend
             legend_text = font_small.render("FOV: 0=Empty, 1=Physical, 2=Agent, 3=Target, 4=Visual", True, TEXT_COLOR)
+            canvas.blit(legend_text, (self.window_size - 200, info_panel_y + 30))
+
+        # Finalize frame
+        if self.render_mode == "human":
+            self.window.blit(canvas, canvas.get_rect())
+            pygame.event.pump()
+            pygame.display.update()
+            self.clock.tick(self.metadata["render_fps"])
+        else:
+            return np.transpose(np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2))
+
+
+class GridWorldEnvParallelExploration(GridWorldEnvParallel):
+    ''' A multi-agent grid world environment for exploration where agents navigate to a static goal 
+    while avoiding moving targets.
+    
+    This environment follows the PettingZoo Parallel API interface, where all agents
+    act simultaneously. Agents are rewarded +5 for reaching the static goal.
+    
+    Key differences from GridWorldEnvParallel:
+    - Has a static goal that agents must reach (rewarded +5)
+    - Moving targets still exist but their positions are NOT visible in observations
+    - Agents must navigate to the goal while avoiding the moving targets
+    
+    Input parameters:
+     - All parameters from GridWorldEnvParallel
+     - goal_color: Color of the static goal (default: (0, 255, 0) - green)
+    '''
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 5}
+
+    def __init__(
+        self,
+        # General settings
+        size=5,
+        max_steps: int = 500,
+        render_mode=None,
+        show_fov_display: bool = True,
+
+        # Rewards and target settings
+        intrinsic=False,
+        lambda_fov: float = 0.5,
+        show_target_coords: bool = False,  # Ignored - goal coords shown instead
+        obstacle_collision_penalty: float = -0.05,
+        death_on_sight: bool = False,
+
+        # Agents and target settings
+        no_target=False,
+        agents: Optional[List[Union[Dict, 'Agent']]] = None,
+        target_config: Optional[Union[Dict, List[Dict]]] = None,
+
+        # Obstacles
+        enable_obstacles: bool = False,
+        num_obstacles: int = 0,
+        num_visual_obstacles: int = 0,
+        
+        # Goal settings
+        goal_color: Tuple[int, int, int] = (0, 255, 0),  # Green by default
+
+    ):
+        # Call parent __init__ but we'll override observation spaces
+        super().__init__(
+            size=size,
+            max_steps=max_steps,
+            render_mode=render_mode,
+            show_fov_display=show_fov_display,
+            intrinsic=intrinsic,
+            lambda_fov=lambda_fov,
+            show_target_coords=False,  # Force False - we show goal instead
+            obstacle_collision_penalty=obstacle_collision_penalty,
+            death_on_sight=death_on_sight,
+            no_target=no_target,
+            agents=agents,
+            target_config=target_config,
+            enable_obstacles=enable_obstacles,
+            num_obstacles=num_obstacles,
+            num_visual_obstacles=num_visual_obstacles,
+        )
+        
+        # Static goal location (will be set in reset)
+        self.goal_location: np.ndarray = np.array([-1, -1], dtype=int)
+        self.goal_color = goal_color
+        
+        # Update observation spaces to include goal instead of target
+        for agent_name in self.possible_agents:
+            agent_obs_space = self.observation_spaces[agent_name].spaces.copy()
+            # Remove target-related keys if they exist
+            if 'target' in agent_obs_space:
+                del agent_obs_space['target']
+            if 'targets' in agent_obs_space:
+                del agent_obs_space['targets']
+            # Add goal position
+            agent_obs_space['goal'] = spaces.Box(
+                low=0, high=self.size - 1, shape=(2,), dtype=np.int32
+            )
+            self.observation_spaces[agent_name] = spaces.Dict(agent_obs_space)
+
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
+        '''
+        Resets the environment to a new state with a static goal.
+        
+        Args:
+            seed: Optional seed for the random number generator
+            options: Optional dictionary of options
+            
+        Returns:
+            tuple: (observations, infos) dictionaries keyed by agent name
+        '''
+        # Call parent reset first
+        observations, infos = super().reset(seed=seed, options=options)
+        
+        # Place static goal at a valid position (not on obstacles, agents, or targets)
+        forbidden = self._cells_covered_by_obstacles()
+        
+        # Add agent positions
+        for agent in self.agent_list:
+            forbidden.add(tuple(agent.location))
+        
+        # Add target positions
+        for target in self.targets:
+            forbidden.add(tuple(target.location))
+        
+        # Find valid positions for goal
+        choices = [
+            i for i in range(self.size * self.size) 
+            if (i // self.size, i % self.size) not in forbidden
+        ]
+        
+        if len(choices) == 0:
+            # Fallback: place goal randomly (might overlap)
+            goal_coord = np.random.choice(self.size * self.size)
+        else:
+            goal_coord = np.random.choice(choices)
+        
+        self.goal_location = np.array([
+            goal_coord // self.size,
+            goal_coord % self.size
+        ], dtype=int)
+        
+        # Update observations to include goal position
+        for agent_name in self.agents:
+            if agent_name in observations:
+                # Remove target-related keys if they exist
+                if 'target' in observations[agent_name]:
+                    del observations[agent_name]['target']
+                if 'targets' in observations[agent_name]:
+                    del observations[agent_name]['targets']
+                # Add goal position
+                observations[agent_name]['goal'] = self.goal_location.copy()
+        
+        # Update infos to include goal distance
+        for agent_name in self.agents:
+            if agent_name in self._agents_by_name:
+                agent_obj = self._agents_by_name[agent_name]
+                infos[agent_name]['distance_to_goal'] = np.linalg.norm(
+                    agent_obj.location - self.goal_location, ord=1
+                )
+        
+        return observations, infos
+
+    def step(self, actions: Dict[str, int]):
+        """
+        Parallel step method - all agents act simultaneously.
+        Rewards agents +5 for reaching the static goal.
+        
+        Args:
+            actions: Dictionary of {agent_name: action} for all active agents
+            
+        Returns:
+            tuple: (observations, rewards, terminations, truncations, infos) dictionaries
+        """
+        # Call parent step but we'll modify rewards and observations
+        observations, rewards, terminations, truncations, infos = super().step(actions)
+        
+        # Modify rewards: check if agents reached the goal
+        for agent_name in self.agents:
+            if agent_name in self._agents_by_name:
+                agent_obj = self._agents_by_name[agent_name]
+                
+                # Check if agent reached the goal
+                reached_goal = np.array_equal(agent_obj.location, self.goal_location)
+                
+                if reached_goal:
+                    # Reward +5 for reaching goal
+                    rewards[agent_name] += 5.0
+                
+                # Agent terminates if: reached_goal OR caught by target (death_on_sight)
+                # Parent step already handles termination when caught by target
+                # We combine both conditions here
+                already_terminated = terminations.get(agent_name, False)
+                terminated = already_terminated or reached_goal
+                terminations[agent_name] = terminated
+                self.terminations[agent_name] = terminated
+                
+                # Update info with goal distance
+                if agent_name in infos:
+                    infos[agent_name]['distance_to_goal'] = np.linalg.norm(
+                        agent_obj.location - self.goal_location, ord=1
+                    )
+        
+        # Modify observations: remove target positions, add goal position
+        for agent_name in self.agents:
+            if agent_name in observations:
+                obs = observations[agent_name]
+                # Remove target-related keys if they exist
+                if 'target' in obs:
+                    del obs['target']
+                if 'targets' in obs:
+                    del obs['targets']
+                # Add goal position
+                obs['goal'] = self.goal_location.copy()
+        
+        return observations, rewards, terminations, truncations, infos
+
+    def observe(self, agent: str):
+        '''
+        Returns observation for a single agent.
+        Includes goal position but NOT target positions.
+        
+        Args:
+            agent: The name of the agent to observe
+            
+        Returns:
+            dict: Observation containing agent location, FOV obstacles, and goal location
+        '''
+        # Call parent observe
+        obs = super().observe(agent)
+        
+        # Remove target-related keys if they exist
+        if 'target' in obs:
+            del obs['target']
+        if 'targets' in obs:
+            del obs['targets']
+        
+        # Add goal position
+        obs['goal'] = self.goal_location.copy()
+        
+        return obs
+
+    def _get_agent_fov_obstacles(self, agent: 'Agent') -> np.ndarray:
+        """Generate field of view obstacle map for an agent.
+        Does NOT include targets (they are hidden from observations).
+        """
+        fov_size = agent.fov_size
+        if fov_size is None:
+            fov_size = 5
+        
+        # Agent's current position
+        agent_x, agent_y = agent.location
+        offset = fov_size // 2
+        
+        # Pre-calculate all world coordinates at once (vectorized)
+        world_x_coords = np.arange(agent_x - offset, agent_x - offset + fov_size)
+        world_y_coords = np.arange(agent_y - offset, agent_y - offset + fov_size)
+        
+        # Create meshgrid for all coordinates
+        world_x_grid, world_y_grid = np.meshgrid(world_x_coords, world_y_coords, indexing='ij')
+        
+        # Check boundaries (vectorized)
+        out_of_bounds = ((world_x_grid < 0) | (world_x_grid >= self.size) | 
+                        (world_y_grid < 0) | (world_y_grid >= self.size))
+        
+        # Initialize FOV map with boundary obstacles
+        fov_map = out_of_bounds.astype(int)
+        
+        # Only check obstacles and other agents for in-bounds cells
+        valid_mask = ~out_of_bounds
+        if valid_mask.any():
+            # Get valid coordinates
+            valid_x = world_x_grid[valid_mask]
+            valid_y = world_y_grid[valid_mask]
+            
+            # Check obstacles, other agents, and goal for valid cells only
+            # NOTE: Targets are NOT included in FOV (they are hidden)
+            for x, y in zip(valid_x, valid_y):
+                x_int, y_int = int(x), int(y)
+                fov_i = int(x - agent_x + offset)
+                fov_j = int(y - agent_y + offset)
+                
+                # Check if goal is at this position
+                if (self.goal_location[0] == x_int and self.goal_location[1] == y_int):
+                    fov_map[fov_i, fov_j] = 5  # Mark goal as 5
+                    continue
+                
+                # Check if another agent is at this position
+                other_agent_present = False
+                for other_agent in self.agent_list:
+                    if (other_agent.name != agent.name and 
+                        other_agent.location[0] == x_int and 
+                        other_agent.location[1] == y_int):
+                        fov_map[fov_i, fov_j] = 2  # Mark other agent as 2
+                        other_agent_present = True
+                        break
+                
+                # If no other agent, check for obstacles
+                if not other_agent_present and self._is_cell_obstacle_fast(x_int, y_int):
+                    fov_map[fov_i, fov_j] = 1  # Mark obstacle as 1
+        
+        return fov_map
+
+    def _render_frame(self):
+        """Render the environment frame including the static goal."""
+        # Initialize pygame for both human and rgb_array modes
+        if not pygame.get_init():
+            pygame.init()
+        
+        if self.window is None and self.render_mode == "human":
+            pygame.display.init()
+            self.window = pygame.display.set_mode((self.window_size, self.window_size + 120))
+        if self.clock is None and self.render_mode == "human":
+            self.clock = pygame.time.Clock()
+
+        # Colors (dark theme)
+        BG_COLOR = (30, 30, 30)
+        GRID_COLOR = (60, 60, 60)
+        INFO_PANEL_COLOR = (50, 50, 50)
+        TEXT_COLOR = (255, 255, 255)
+
+        # Create canvas with extra height for info panel
+        canvas = pygame.Surface((self.window_size, self.window_size + 120))
+        canvas.fill(BG_COLOR)
+        pix_square = self.window_size / self.size
+
+        # Grid
+        for x in range(self.size + 1):
+            pygame.draw.line(
+                canvas, GRID_COLOR, (0, pix_square * x), (self.window_size, pix_square * x), 1
+            )
+            pygame.draw.line(
+                canvas, GRID_COLOR, (pix_square * x, 0), (pix_square * x, self.window_size), 1
+            )
+
+        # Physical obstacles
+        if self._obstacles:
+            OBSTACLE_COLOR = (90, 90, 90)
+            for (ox, oy, ow, oh) in self._obstacles:
+                rect = pygame.Rect(
+                    (ox * pix_square, oy * pix_square),
+                    (ow * pix_square, oh * pix_square),
+                )
+                pygame.draw.rect(canvas, OBSTACLE_COLOR, rect)
+        
+        # Visual obstacles
+        if self._visual_obstacles:
+            VISUAL_OBSTACLE_COLOR = (150, 200, 240, 150)
+            VISUAL_OBSTACLE_STRIPE_COLOR = (100, 160, 220, 200)
+            
+            for (ox, oy, ow, oh) in self._visual_obstacles:
+                temp_surface = pygame.Surface((ow * pix_square, oh * pix_square), pygame.SRCALPHA)
+                temp_surface.fill(VISUAL_OBSTACLE_COLOR)
+                
+                stripe_spacing = 8
+                stripe_width = 3
+                
+                for i in range(-int(oh * pix_square), int(ow * pix_square), stripe_spacing):
+                    start_x = i
+                    start_y = 0
+                    end_x = i + int(oh * pix_square)
+                    end_y = int(oh * pix_square)
+                    pygame.draw.line(temp_surface, VISUAL_OBSTACLE_STRIPE_COLOR, 
+                                   (start_x, start_y), (end_x, end_y), stripe_width)
+                
+                canvas.blit(temp_surface, (ox * pix_square, oy * pix_square))
+
+        # Draw static goal (green circle) - BEFORE targets so it's behind them
+        goal_center = (self.goal_location + 0.5) * pix_square
+        goal_radius = int(pix_square * 0.3)
+        pygame.draw.circle(canvas, self.goal_color, goal_center.astype(int), goal_radius)
+        pygame.draw.circle(canvas, (255, 255, 255), goal_center.astype(int), goal_radius, 2)
+
+        # Targets (draw all targets) - on top of goal
+        for target in self.targets:
+            point1, point2, point3 = target.get_triangle_points(pix_square)
+            pygame.draw.polygon(canvas, target.color, [point1, point2, point3])
+            
+            top_left, top_right, bottom_right, bottom_left = target.get_box_coordinates(pix_square)
+            box_points = [top_left, top_right, bottom_right, bottom_left, top_left]
+            pygame.draw.lines(canvas, target.color, False, box_points, target.outline_width)
+            
+            target_detects = False
+            for agent_name in self._agents_by_name:
+                agent_obj = self._agents_by_name[agent_name]
+                if self._is_agent_in_target_fov(agent_obj, target):
+                    target_detects = True
+                    break
+            
+            if target_detects:
+                target_center = (target.location + 0.5) * pix_square
+                dot_center = target_center + np.array([0, -pix_square * 0.6])
+                pygame.draw.circle(canvas, (255, 255, 0), dot_center.astype(int), int(pix_square / 8))
+
+        # Agents
+        for a in self.agent_list:
+            center = (a.location + 0.5) * pix_square
+            agent_color = (128, 128, 128) if self.terminations.get(a.name, False) else a.color
+            
+            if hasattr(a, 'altitude') and hasattr(a, 'fov_base_size'):
+                square_size = int(pix_square / 3)
+                square_rect = pygame.Rect(
+                    center[0] - square_size // 2,
+                    center[1] - square_size // 2,
+                    square_size,
+                    square_size
+                )
+                pygame.draw.rect(canvas, agent_color, square_rect)
+            else:
+                pygame.draw.circle(canvas, agent_color, center.astype(int), int(pix_square / 3))
+            
+            if self._agent_detects_target.get(a.name, False):
+                dot_center = center + np.array([0, -pix_square * 0.6])
+                pygame.draw.circle(canvas, (255, 255, 0), dot_center.astype(int), int(pix_square / 8))
+
+        # Draw agent FOV boxes (simplified - using parent's logic would be complex)
+        for a in self.agent_list:
+            if a.fov_size > 1:
+                k = a.fov_size
+                offset = k // 2
+                start_cell = (a.location - np.array([offset, offset]))
+                top_left = start_cell * pix_square
+                side_px = pix_square * k
+                rect = pygame.Rect(top_left, (side_px, side_px))
+                box_color = (128, 128, 128) if self.terminations.get(a.name, False) else a.color
+                pygame.draw.rect(canvas, box_color, rect, width=a.outline_width)
+
+        # Information panel
+        info_panel_y = self.window_size
+        info_panel_height = 120
+        
+        info_rect = pygame.Rect(0, info_panel_y, self.window_size, info_panel_height)
+        pygame.draw.rect(canvas, INFO_PANEL_COLOR, info_rect)
+        pygame.draw.rect(canvas, GRID_COLOR, info_rect, 2)
+        
+        try:
+            if not pygame.font.get_init():
+                pygame.font.init()
+            font_large = pygame.font.Font(None, 24)
+            font_medium = pygame.font.Font(None, 18)
+            font_small = pygame.font.Font(None, 16)
+        except:
+            try:
+                font_large = pygame.font.SysFont('Arial', 24)
+                font_medium = pygame.font.SysFont('Arial', 18)
+                font_small = pygame.font.SysFont('Arial', 16)
+            except:
+                font_large = None
+                font_medium = None
+                font_small = None
+        
+        if font_large is not None and font_medium is not None and font_small is not None:
+            step_text = f"Parallel Step: {self.step_counter}"
+            step_surface = font_large.render(step_text, True, TEXT_COLOR)
+            canvas.blit(step_surface, (10, info_panel_y + 10))
+            
+            y_offset = info_panel_y + 40
+            for i, agent in enumerate(self.agent_list):
+                agent_info = f"{agent.name}: ({agent.location[0]}, {agent.location[1]})"
+                agent_text = font_medium.render(agent_info, True, agent.color)
+                canvas.blit(agent_text, (10, y_offset + i * 20))
+            
+            # Goal information
+            goal_info = f"Goal: ({self.goal_location[0]}, {self.goal_location[1]})"
+            goal_text = font_medium.render(goal_info, True, self.goal_color)
+            canvas.blit(goal_text, (10, y_offset + len(self.agent_list) * 20))
+            
+            # Target information (show all targets)
+            target_y_offset = y_offset + len(self.agent_list) * 20 + 20
+            for idx, target in enumerate(self.targets):
+                target_info = f"{target.name}: ({target.location[0]}, {target.location[1]})"
+                target_text = font_medium.render(target_info, True, target.color)
+                canvas.blit(target_text, (10, target_y_offset + idx * 20))
+            
+            lambda_text = font_small.render(f"λ FOV: {self.lambda_fov:.2f}", True, TEXT_COLOR)
+            canvas.blit(lambda_text, (self.window_size - 200, info_panel_y + 10))
+            
+            legend_text = font_small.render("FOV: 0=Empty, 1=Physical, 2=Agent, 5=Goal, 4=Visual", True, TEXT_COLOR)
             canvas.blit(legend_text, (self.window_size - 200, info_panel_y + 30))
 
         # Finalize frame

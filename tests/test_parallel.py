@@ -18,9 +18,54 @@ if __name__ == "__main__":
     air_observer_config_path = os.path.join(base_dir, "configs", "agent_configs", "air_observer_agent.yaml")
     target_config_path = os.path.join(base_dir, "configs", "target_configs", "target_config.yaml")
 
-    # Load target configuration
-    with open(target_config_path, "r") as f:
-        target_config = yaml.safe_load(f)
+    # Load target configuration(s)
+    # Option 1: Single target (backward compatible)
+    # with open(target_config_path, "r") as f:
+    #     target_config = yaml.safe_load(f)
+    
+    # Option 2: Multiple targets - create a list of target configs
+    target_config = [
+        {
+            "name": "target_1",
+            "color": [255, 100, 100],  # Red
+            "movement_speed": 0.3,
+            "movement_range": 1,
+            "smooth_movement": True,
+            "box_cells": 3,
+            "outline_width": 3,
+            "box_scale": 1.0
+        },
+        {
+            "name": "target_2",
+            "color": [100, 255, 100],  # Green
+            "movement_speed": 0.5,
+            "movement_range": 1,
+            "smooth_movement": True,
+            "box_cells": 3,
+            "outline_width": 3,
+            "box_scale": 1.0
+        },
+        {
+            "name": "target_3",
+            "color": [100, 100, 255],  # Blue
+            "movement_speed": 0.2,
+            "movement_range": 1,
+            "smooth_movement": True,
+            "box_cells": 3,
+            "outline_width": 3,
+            "box_scale": 1.0
+        }
+    ]
+    
+    # Option 3: Load from YAML and convert to list (if you want to use YAML)
+    # with open(target_config_path, "r") as f:
+    #     single_target = yaml.safe_load(f)
+    # target_config = [single_target]  # Wrap in list for single target
+    # Or load multiple YAML files:
+    # target_config = []
+    # for i in range(1, 4):  # Load target_1.yaml, target_2.yaml, etc.
+    #     with open(f"configs/target_configs/target_{i}.yaml", "r") as f:
+    #         target_config.append(yaml.safe_load(f))
 
     # Load agent configurations from YAML files
     with open(ground_agent_config_path, "r") as f:
@@ -36,7 +81,7 @@ if __name__ == "__main__":
         air_observer_config
     ]
 
-    size = int(7)
+    size = int(20)
     record = False
 
     # Ensure video folder exists
@@ -78,6 +123,9 @@ if __name__ == "__main__":
     print(f"Grid size: {env.size}x{env.size}")
     print(f"Physical obstacles: {len(env._obstacles)} (block movement)")
     print(f"Visual obstacles: {len(env._visual_obstacles)} (block ObserverAgent view only)")
+    print(f"Targets: {len(env.targets)}")
+    for idx, target in enumerate(env.targets):
+        print(f"  Target {idx+1}: {target.name} at {target.location}, color={target.color}")
     print(f"Active agents: {env.agents}")
     print(f"Possible agents: {env.possible_agents}")
     print(f"Action spaces: {env.action_spaces}")
@@ -95,7 +143,9 @@ if __name__ == "__main__":
         print(f"\n┌─ {agent_name.upper()} AGENT OBSERVATION SPACE ─┐")
         print(f"│ Agent Position: {agent_obs_space['agent']}")
         if 'target' in agent_obs_space:
-            print(f"│ Target Position: {agent_obs_space['target']}")
+            print(f"│ Target Position (first): {agent_obs_space['target']}")
+        if 'targets' in agent_obs_space:
+            print(f"│ All Targets: {agent_obs_space['targets']}")
         print(f"│ FOV Obstacles:   {agent_obs_space['obstacles_fov']}")
         
         # Show flight level for ObserverAgent
@@ -134,6 +184,11 @@ if __name__ == "__main__":
         print(f"Step {step_idx}:")
         for agent in env.agents:
             print(f"  {agent}: Action={actions[agent]}, Reward={rewards[agent]:.3f}")
+            # Show target distances from info
+            if agent in infos:
+                for key, value in infos[agent].items():
+                    if 'distance' in key:
+                        print(f"    {key}: {value:.2f}")
         
         if step_idx >= 100:  # Limit for demo
             break
