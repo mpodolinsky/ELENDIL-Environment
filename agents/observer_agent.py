@@ -281,7 +281,15 @@ class ObserverAgent(BaseAgent):
                             fov_map[i, j] = 0  # Target missed (shows as empty)
                     continue
                 
-                # Check for visual obstacles (they hide what's beneath them)
+                # Check for exploration goal before visual obstacle masking
+                goal_location = env_state.get("goal_location")
+                if goal_location is not None:
+                    goal_x, goal_y = int(goal_location[0]), int(goal_location[1])
+                    if goal_x == world_x and goal_y == world_y and goal_x >= 0 and goal_y >= 0:
+                        fov_map[i, j] = 5  # Static exploration goal
+                        continue
+
+                # Check for visual obstacles (they hide what's beneath them, except goal)
                 visual_obstacles = env_state.get("visual_obstacles", [])
                 if self._is_cell_in_visual_obstacle(world_x, world_y, visual_obstacles):
                     fov_map[i, j] = 4  # Visual obstacle
