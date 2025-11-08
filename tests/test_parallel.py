@@ -104,6 +104,7 @@ if __name__ == "__main__":
     target_config=target_config,
     max_steps=500,
     lambda_fov=0.5,
+    goal_enabled=True,
     death_on_sight=True)
 
     if record: 

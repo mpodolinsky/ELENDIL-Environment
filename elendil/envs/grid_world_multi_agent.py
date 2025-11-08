@@ -5,9 +5,7 @@ import pygame
 
 import gymnasium as gym
 from gymnasium import spaces
-from gymnasium.wrappers import FlattenObservation
-from pettingzoo import AECEnv
-from pettingzoo.utils import AgentSelector
+from gymnasium.spaces.utils import flatten, flatten_space
 from pettingzoo.utils.env import ParallelEnv
 
 from typing import Optional, List, Dict, Union, Any, Tuple
@@ -63,7 +61,6 @@ class GridWorldEnvParallel(ParallelEnv):
      - goal_enabled: Enable a static goal for agents to reach (default: False)
      - goal_reward: Reward granted when an agent reaches the goal
      - goal_approach_reward_scale: Dense shaping scale based on distance deltas to the goal
-     - hide_targets_when_goal: Hide targets from observations when goal is enabled
      
     Agent Configuration Examples:
         # FOVAgent config
@@ -80,14 +77,14 @@ class GridWorldEnvParallel(ParallelEnv):
         size=5,
         max_steps: int = 500,
         render_mode=None,
-        show_fov_display: bool = True,
+        show_fov_display: bool = False,
 
         # Rewards and target settings
         intrinsic=False,
         lambda_fov: float = 0.5,
         show_target_coords: bool = False,
         obstacle_collision_penalty: float = -0.05,
-        death_on_sight: bool = False,
+        death_on_sight: bool = True,
 
         # Agents and target settings
         no_target=False,
@@ -103,8 +100,7 @@ class GridWorldEnvParallel(ParallelEnv):
         goal_enabled: bool = True,
         goal_color: Tuple[int, int, int] = (0, 255, 0),
         goal_reward: float = 20.0,
-        goal_approach_reward_scale: float = 0.0,
-        hide_targets_when_goal: bool = True,
+        goal_approach_reward_scale: float = 0.05,
 
     ):
         self.size = size  # The size of the square grid (default to 5x5)
@@ -122,9 +118,6 @@ class GridWorldEnvParallel(ParallelEnv):
         self.goal_reward = float(goal_reward)
         self.goal_approach_reward_scale = float(goal_approach_reward_scale)
         self.goal_color = tuple(goal_color)
-        self._goal_hide_targets = self.goal_enabled and bool(hide_targets_when_goal)
-        if self._goal_hide_targets:
-            self.show_target_coords = False
         self.goal_location = np.array([-1, -1], dtype=int)
         self._prev_distance_to_goal: Dict[str, Optional[float]] = {}
         
@@ -216,7 +209,14 @@ class GridWorldEnvParallel(ParallelEnv):
 
         # Per-agent spaces
         self.action_spaces = {a.name: a.get_action_space() if hasattr(a, 'get_action_space') else a.action_space for a in self.agent_list}
-        self.observation_spaces = {a.name: a.get_observation_space() if hasattr(a, 'get_observation_space') else a.observation_space for a in self.agent_list}
+        initial_observation_spaces = {
+            a.name: a.get_observation_space() if hasattr(a, 'get_observation_space') else a.observation_space
+            for a in self.agent_list
+        }
+        self._raw_observation_spaces: Dict[str, spaces.Space] = {}
+        self.observation_spaces = {}
+        for agent_name, raw_space in initial_observation_spaces.items():
+            self._set_observation_space(agent_name, raw_space)
         if self.goal_enabled:
             self._update_observation_spaces_for_goal()
 
@@ -293,21 +293,26 @@ class GridWorldEnvParallel(ParallelEnv):
         # Track terminations for rendering
         self.terminations = {a.name: False for a in self.agent_list}
 
+    def _set_observation_space(self, agent_name: str, raw_space: spaces.Space) -> None:
+        """Store raw observation space and corresponding flattened Box."""
+        self._raw_observation_spaces[agent_name] = raw_space
+        self.observation_spaces[agent_name] = flatten_space(raw_space)
+
     def _update_observation_spaces_for_goal(self) -> None:
-        for agent_name, agent_space in self.observation_spaces.items():
-            if not isinstance(agent_space, spaces.Dict):
+        for agent_name in list(self._raw_observation_spaces.keys()):
+            raw_space = self._raw_observation_spaces[agent_name]
+            if not isinstance(raw_space, spaces.Dict):
                 continue
-            space_dict = agent_space.spaces.copy()
-            if self._goal_hide_targets:
-                space_dict.pop("target", None)
-                space_dict.pop("targets", None)
+            space_dict = raw_space.spaces.copy()
+            if "goal" in space_dict:
+                continue
             space_dict["goal"] = spaces.Box(
                 low=0,
                 high=self.size - 1,
                 shape=(2,),
                 dtype=np.int32,
             )
-            self.observation_spaces[agent_name] = spaces.Dict(space_dict)
+            self._set_observation_space(agent_name, spaces.Dict(space_dict))
 
     def _reset_goal(self) -> None:
         if not self.goal_enabled:
@@ -411,6 +416,8 @@ class GridWorldEnvParallel(ParallelEnv):
 
         self._reset_goal()
 
+        self._reset_goal()
+
         if self.intrinsic: # Counting visits to cells if intrinsic exploration is enabled
             for a in self.agent_list:
                 self._visit_counts[a.name].fill(0)
@@ -475,6 +482,9 @@ class GridWorldEnvParallel(ParallelEnv):
         goal_loc = getattr(self, "goal_location", None)
         if isinstance(goal_loc, np.ndarray):
             goal_loc = goal_loc.copy()
+        goal_loc = getattr(self, "goal_location", None)
+        if isinstance(goal_loc, np.ndarray):
+            goal_loc = goal_loc.copy()
         env_state = {
             "agents": self.agent_list,
             "target": self.target,  # For backward compatibility
@@ -482,7 +492,9 @@ class GridWorldEnvParallel(ParallelEnv):
             "obstacles": self._obstacles,
             "visual_obstacles": self._visual_obstacles,
             "grid_size": self.size,
-            "goal_location": goal_loc
+            "goal_location": goal_loc,
+            "grid_size": self.size,
+            "goal_location": goal_loc,
         }
 
         # Process all agent actions simultaneously
@@ -542,6 +554,7 @@ class GridWorldEnvParallel(ParallelEnv):
             
             # Calculate individual reward for this agent
             reward = 0.0
+            reached_goal = self.goal_enabled and np.array_equal(agent_obj.location, self.goal_location)
             reached_goal = self.goal_enabled and np.array_equal(agent_obj.location, self.goal_location)
             
             # Apply obstacle collision penalty if agent hit an obstacle
@@ -609,11 +622,31 @@ class GridWorldEnvParallel(ParallelEnv):
                 if reached_goal:
                     reward += self.goal_reward
 
+            if self.goal_enabled:
+                current_distance = self._distance_to_goal(agent_obj)
+                previous_distance = self._prev_distance_to_goal.get(agent_name)
+                if (
+                    self.goal_approach_reward_scale != 0.0
+                    and previous_distance is not None
+                    and current_distance is not None
+                ):
+                    delta = previous_distance - current_distance
+                    if delta != 0:
+                        reward += self.goal_approach_reward_scale * delta
+                self._prev_distance_to_goal[agent_name] = current_distance
+                if reached_goal:
+                    reward += self.goal_reward
+
             rewards[agent_name] = reward
             
             # Check termination/truncation for this agent
             # Terminates the agent if it reaches the target or if detected by target (death_on_sight)
             detected_by_target = self._target_detects_agent.get(agent_name, False)
+            terminated = (
+                reached_target
+                or reached_goal
+                or (self.death_on_sight and detected_by_target)
+            )
             terminated = (
                 reached_target
                 or reached_goal
@@ -667,6 +700,9 @@ class GridWorldEnvParallel(ParallelEnv):
         goal_loc = getattr(self, "goal_location", None)
         if isinstance(goal_loc, np.ndarray):
             goal_loc = goal_loc.copy()
+        goal_loc = getattr(self, "goal_location", None)
+        if isinstance(goal_loc, np.ndarray):
+            goal_loc = goal_loc.copy()
         env_state = {
             "agents": self.agent_list,
             "target": self.target,  # For backward compatibility
@@ -674,11 +710,14 @@ class GridWorldEnvParallel(ParallelEnv):
             "obstacles": self._obstacles,
             "visual_obstacles": self._visual_obstacles,
             "grid_size": self.size,
-            "goal_location": goal_loc
+            "goal_location": goal_loc,
+            "grid_size": self.size,
+            "goal_location": goal_loc,
         }
         
         # Use agent's own observation method if available, otherwise fall back to legacy method
         if hasattr(agent_obj, 'observe') and callable(getattr(agent_obj, 'observe')):
+            obs = agent_obj.observe(env_state)
             obs = agent_obj.observe(env_state)
         else:
             # Legacy observation method
@@ -699,12 +738,14 @@ class GridWorldEnvParallel(ParallelEnv):
 
         if isinstance(obs, dict):
             obs = dict(obs)
-            if self.goal_enabled:
-                if self._goal_hide_targets:
-                    obs.pop('target', None)
-                    obs.pop('targets', None)
-                obs['goal'] = self.goal_location.copy()
-        return obs
+            raw_space = self._raw_observation_spaces.get(agent)
+            if self.goal_enabled and isinstance(raw_space, spaces.Dict) and "goal" in raw_space.spaces:
+                obs["goal"] = self.goal_location.copy()
+
+        raw_space = self._raw_observation_spaces.get(agent)
+        if raw_space is None:
+            return obs
+        return flatten(raw_space, obs)
 
     def _get_agent_info(self, agent_name: str):
         '''Get info for a specific agent'''
@@ -730,6 +771,10 @@ class GridWorldEnvParallel(ParallelEnv):
             if self.goal_enabled:
                 goal_distance = self._distance_to_goal(agent_obj)
                 info[f"distance_{agent_name}_to_goal"] = goal_distance if goal_distance is not None else -1
+            
+            if self.goal_enabled:
+                goal_distance = self._distance_to_goal(agent_obj)
+                info[f"distance_{agent_name}_to_goal"] = goal_distance if goal_distance is not None else -1
         else:
             info[f"distance_{agent_name}"] = -1
         return info
@@ -747,6 +792,12 @@ class GridWorldEnvParallel(ParallelEnv):
         # For each position with multiple agents, keep only the first agent there
         for pos_tuple, agents_at_pos in position_to_agents.items():
             if len(agents_at_pos) > 1:
+                if (
+                    self.goal_enabled
+                    and np.array_equal(np.array(pos_tuple, dtype=int), self.goal_location)
+                ):
+                    # Allow multiple agents to occupy the goal cell simultaneously
+                    continue
                 # Keep the first agent at this position, move others back to their original positions
                 for agent_name in agents_at_pos[1:]:
                     agent_obj = self._agents_by_name[agent_name]
@@ -794,10 +845,19 @@ class GridWorldEnvParallel(ParallelEnv):
             valid_y = world_y_grid[valid_mask]
             
             # Check obstacles, agents, targets, and goal for valid cells only
+            # Check obstacles, agents, targets, and goal for valid cells only
             for x, y in zip(valid_x, valid_y):
                 x_int, y_int = int(x), int(y)
                 fov_i = int(x - agent_x + offset)
                 fov_j = int(y - agent_y + offset)
+
+                if (
+                    self.goal_enabled
+                    and self.goal_location[0] == x_int
+                    and self.goal_location[1] == y_int
+                ):
+                    fov_map[fov_i, fov_j] = 5
+                    continue
 
                 if (
                     self.goal_enabled
@@ -1071,6 +1131,12 @@ class GridWorldEnvParallel(ParallelEnv):
                                    (start_x, start_y), (end_x, end_y), stripe_width)
                 
                 canvas.blit(temp_surface, (ox * pix_square, oy * pix_square))
+
+        if self.goal_enabled and np.all(self.goal_location >= 0):
+            goal_center = (self.goal_location + 0.5) * pix_square
+            goal_radius = int(pix_square * 0.3)
+            pygame.draw.circle(canvas, self.goal_color, goal_center.astype(int), goal_radius)
+            pygame.draw.circle(canvas, (255, 255, 255), goal_center.astype(int), goal_radius, 2)
 
         if self.goal_enabled and np.all(self.goal_location >= 0):
             goal_center = (self.goal_location + 0.5) * pix_square
@@ -1360,6 +1426,11 @@ class GridWorldEnvParallel(ParallelEnv):
                 goal_text = font_medium.render(goal_info, True, self.goal_color)
                 canvas.blit(goal_text, (10, target_y_offset))
                 target_y_offset += 20
+            if self.goal_enabled:
+                goal_info = f"Goal: ({self.goal_location[0]}, {self.goal_location[1]})"
+                goal_text = font_medium.render(goal_info, True, self.goal_color)
+                canvas.blit(goal_text, (10, target_y_offset))
+                target_y_offset += 20
             
             for idx, target in enumerate(self.targets):
                 target_info = f"{target.name}: ({target.location[0]}, {target.location[1]})"
@@ -1367,12 +1438,13 @@ class GridWorldEnvParallel(ParallelEnv):
                 canvas.blit(target_text, (10, target_y_offset + idx * 20))
             
             # Lambda FOV parameter
+            # Lambda FOV parameter
             lambda_text = font_small.render(f"λ FOV: {self.lambda_fov:.2f}", True, TEXT_COLOR)
             canvas.blit(lambda_text, (self.window_size - 200, info_panel_y + 10))
             
             # FOV legend
             fov_parts = ["0=Empty", "1=Physical", "2=Agent"]
-            if not self._goal_hide_targets and self.targets:
+            if self.targets:
                 fov_parts.append("3=Target")
             if self.goal_enabled:
                 fov_parts.append("5=Goal")
