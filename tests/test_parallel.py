@@ -35,26 +35,26 @@ if __name__ == "__main__":
             "outline_width": 3,
             "box_scale": 1.0
         },
-        {
-            "name": "target_2",
-            "color": [100, 255, 100],  # Green
-            "movement_speed": 0.5,
-            "movement_range": 1,
-            "smooth_movement": True,
-            "box_cells": 3,
-            "outline_width": 3,
-            "box_scale": 1.0
-        },
-        {
-            "name": "target_3",
-            "color": [100, 100, 255],  # Blue
-            "movement_speed": 0.2,
-            "movement_range": 1,
-            "smooth_movement": True,
-            "box_cells": 3,
-            "outline_width": 3,
-            "box_scale": 1.0
-        }
+        # {
+        #     "name": "target_2",
+        #     "color": [100, 255, 100],  # Green
+        #     "movement_speed": 0.5,
+        #     "movement_range": 1,
+        #     "smooth_movement": True,
+        #     "box_cells": 3,
+        #     "outline_width": 3,
+        #     "box_scale": 1.0
+        # },
+        # {
+        #     "name": "target_3",
+        #     "color": [100, 100, 255],  # Blue
+        #     "movement_speed": 0.2,
+        #     "movement_range": 1,
+        #     "smooth_movement": True,
+        #     "box_cells": 3,
+        #     "outline_width": 3,
+        #     "box_scale": 1.0
+        # }
     ]
     
     # Option 3: Load from YAML and convert to list (if you want to use YAML)
@@ -81,7 +81,7 @@ if __name__ == "__main__":
         air_observer_config
     ]
 
-    size = int(20)
+    size = int(10)
     record = False
 
     # Ensure video folder exists

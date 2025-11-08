@@ -35,26 +35,26 @@ if __name__ == "__main__":
             "outline_width": 3,
             "box_scale": 1.0
         },
-        {
-            "name": "target_2",
-            "color": [100, 255, 100],  # Green
-            "movement_speed": 0.5,
-            "movement_range": 1,
-            "smooth_movement": True,
-            "box_cells": 3,
-            "outline_width": 3,
-            "box_scale": 1.0
-        },
-        {
-            "name": "target_3",
-            "color": [100, 100, 255],  # Blue
-            "movement_speed": 0.2,
-            "movement_range": 1,
-            "smooth_movement": True,
-            "box_cells": 3,
-            "outline_width": 3,
-            "box_scale": 1.0
-        }
+        # {
+        #     "name": "target_2",
+        #     "color": [100, 255, 100],  # Green
+        #     "movement_speed": 0.5,
+        #     "movement_range": 1,
+        #     "smooth_movement": True,
+        #     "box_cells": 3,
+        #     "outline_width": 3,
+        #     "box_scale": 1.0
+        # },
+        # {
+        #     "name": "target_3",
+        #     "color": [100, 100, 255],  # Blue
+        #     "movement_speed": 0.2,
+        #     "movement_range": 1,
+        #     "smooth_movement": True,
+        #     "box_cells": 3,
+        #     "outline_width": 3,
+        #     "box_scale": 1.0
+        # }
     ]
     
     # Option 3: Load from YAML and convert to list (if you want to use YAML)
@@ -81,7 +81,7 @@ if __name__ == "__main__":
         air_observer_config
     ]
 
-    size = int(20)
+    size = int(10)
     record = False
 
     # Ensure video folder exists
@@ -98,11 +98,11 @@ if __name__ == "__main__":
         render_mode=render_mode,
         size=size,
         agents=agent_configs,  # Pass configs - agents will be auto-instantiated!
-        no_target=False,
+        no_target=True,
         enable_obstacles=True,
         num_obstacles=3,
         num_visual_obstacles=3,  # Visual obstacles for ObserverAgent (block view but not movement)
-        show_fov_display=False,
+        show_fov_display=True,
         target_config=target_config,  # Moving targets (hidden from observations)
         max_steps=500,
         lambda_fov=0.5,

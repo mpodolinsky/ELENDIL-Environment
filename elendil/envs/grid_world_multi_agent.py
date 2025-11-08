@@ -2691,7 +2691,7 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
                 self._prev_distance_to_goal[agent_name] = current_distance
         
         # Modify rewards: check if agents reached the goal
-        for agent_name in self.agents:
+        for agent_name in list(self.agents):
             if agent_name in self._agents_by_name:
                 agent_obj = self._agents_by_name[agent_name]
                 
@@ -2715,6 +2715,18 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
                     infos[agent_name]['distance_to_goal'] = np.linalg.norm(
                         agent_obj.location - self.goal_location, ord=1
                     )
+        
+        # Remove any agents that terminated after goal check
+        self.agents = [
+            agent for agent in self.agents
+            if not (terminations.get(agent, False) or truncations.get(agent, False))
+        ]
+
+        # Drop observations/infos for agents that are no longer active
+        inactive_agents = set(observations.keys()) - set(self.agents)
+        for agent_name in inactive_agents:
+            observations.pop(agent_name, None)
+            infos.pop(agent_name, None)
         
         # Modify observations: remove target positions, add goal position
         for agent_name in self.agents:
@@ -2936,8 +2948,10 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
                 dot_center = center + np.array([0, -pix_square * 0.6])
                 pygame.draw.circle(canvas, (255, 255, 0), dot_center.astype(int), int(pix_square / 8))
 
-        # Draw agent FOV boxes (simplified - using parent's logic would be complex)
-        for a in self.agent_list:
+        # Draw agent FOV boxes (with altitude styling for observer agents)
+        def draw_agent_box(a: Agent):
+            box_color = (128, 128, 128) if self.terminations.get(a.name, False) else a.color
+            
             if a.fov_size > 1:
                 k = a.fov_size
                 offset = k // 2
@@ -2945,8 +2959,117 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
                 top_left = start_cell * pix_square
                 side_px = pix_square * k
                 rect = pygame.Rect(top_left, (side_px, side_px))
-                box_color = (128, 128, 128) if self.terminations.get(a.name, False) else a.color
-                pygame.draw.rect(canvas, box_color, rect, width=a.outline_width)
+                
+                if hasattr(a, 'altitude') and hasattr(a, 'fov_base_size'):
+                    if a.altitude >= 1:
+                        rings_to_mask = 3 - a.altitude
+                        visible_size = a.fov_size - (rings_to_mask * 2)
+                        if visible_size < 1:
+                            visible_size = 1
+                        visible_offset = visible_size // 2
+                        visible_start_cell = (a.location - np.array([visible_offset, visible_offset]))
+                        visible_top_left = visible_start_cell * pix_square
+                        visible_side_px = pix_square * visible_size
+                        visible_rect = pygame.Rect(visible_top_left, (visible_side_px, visible_side_px))
+                        
+                        if a.altitude == 1:
+                            pygame.draw.rect(canvas, box_color, visible_rect, width=a.outline_width)
+                        elif a.altitude == 2:
+                            draw_dashed_rect(canvas, box_color, visible_rect, a.outline_width)
+                        elif a.altitude == 3:
+                            draw_dotted_rect(canvas, box_color, visible_rect, a.outline_width)
+                else:
+                    pygame.draw.rect(canvas, box_color, rect, width=a.outline_width)
+            else:
+                box_side = pix_square * getattr(a, "box_scale", 1.0)
+                top_left = (a.location * pix_square) + ((pix_square - box_side) / 2)
+                rect = pygame.Rect(top_left, (box_side, box_side))
+                pygame.draw.rect(canvas, box_color, rect, width=getattr(a, "outline_width", 1))
+
+        def draw_dashed_rect(surface, color, rect, width):
+            x, y, w, h = rect
+            dash_length = 8
+            gap_length = 4
+            draw_dashed_line(surface, color, (x, y), (x + w, y), dash_length, gap_length, width)
+            draw_dashed_line(surface, color, (x, y + h), (x + w, y + h), dash_length, gap_length, width)
+            draw_dashed_line(surface, color, (x, y), (x, y + h), dash_length, gap_length, width)
+            draw_dashed_line(surface, color, (x + w, y), (x + w, y + h), dash_length, gap_length, width)
+
+        def draw_dotted_rect(surface, color, rect, width):
+            x, y, w, h = rect
+            dot_spacing = 6
+            draw_dotted_line(surface, color, (x, y), (x + w, y), dot_spacing, width)
+            draw_dotted_line(surface, color, (x, y + h), (x + w, y + h), dot_spacing, width)
+            draw_dotted_line(surface, color, (x, y), (x, y + h), dot_spacing, width)
+            draw_dotted_line(surface, color, (x + w, y), (x + w, y + h), dot_spacing, width)
+
+        def draw_dashed_line(surface, color, start, end, dash_length, gap_length, width):
+            x1, y1 = start
+            x2, y2 = end
+            dx = x2 - x1
+            dy = y2 - y1
+            line_length = (dx * dx + dy * dy) ** 0.5
+            if line_length == 0:
+                return
+            dx /= line_length
+            dy /= line_length
+            current_length = 0
+            draw_dash = True
+            while current_length < line_length:
+                if draw_dash:
+                    dash_end_length = min(current_length + dash_length, line_length)
+                    start_x = x1 + dx * current_length
+                    start_y = y1 + dy * current_length
+                    end_x = x1 + dx * dash_end_length
+                    end_y = y1 + dy * dash_end_length
+                    pygame.draw.line(surface, color, (start_x, start_y), (end_x, end_y), width)
+                    current_length = dash_end_length
+                else:
+                    current_length += gap_length
+                draw_dash = not draw_dash
+
+        def draw_dotted_line(surface, color, start, end, dot_spacing, width):
+            x1, y1 = start
+            x2, y2 = end
+            dx = x2 - x1
+            dy = y2 - y1
+            line_length = (dx * dx + dy * dy) ** 0.5
+            if line_length == 0:
+                return
+            dx /= line_length
+            dy /= line_length
+            current_length = 0
+            while current_length < line_length:
+                dot_x = x1 + dx * current_length
+                dot_y = y1 + dy * current_length
+                pygame.draw.circle(surface, color, (int(dot_x), int(dot_y)), width)
+                current_length += dot_spacing
+
+        for a in self.agent_list:
+            draw_agent_box(a)
+
+        # Draw halos around agents that see other agents in their FOV
+        for a in self.agent_list:
+            fov_map = self._get_agent_fov_obstacles(a)
+            if np.any(fov_map == 2):
+                center_x = (a.location[0] + 0.5) * pix_square
+                center_y = (a.location[1] + 0.5) * pix_square
+                halo_radius = pix_square * 0.6
+                pygame.draw.circle(canvas, a.color, (int(center_x), int(center_y)), int(halo_radius), width=3)
+
+        # Draw lines through last 3 visited cells for each agent
+        for a in self.agent_list:
+            if len(a.last_visited_cells) >= 2:
+                pixel_points = []
+                for cell in a.last_visited_cells:
+                    x, y = cell
+                    center_x = (x + 0.5) * pix_square
+                    center_y = (y + 0.5) * pix_square
+                    pixel_points.append((center_x, center_y))
+                for i in range(len(pixel_points) - 1):
+                    start_pos = pixel_points[i]
+                    end_pos = pixel_points[i + 1]
+                    pygame.draw.line(canvas, a.color, start_pos, end_pos, width=2)
 
         # Information panel
         info_panel_y = self.window_size
@@ -2980,6 +3103,8 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
             y_offset = info_panel_y + 40
             for i, agent in enumerate(self.agent_list):
                 agent_info = f"{agent.name}: ({agent.location[0]}, {agent.location[1]})"
+                if hasattr(agent, 'altitude'):
+                    agent_info += f" | FL: {agent.altitude}"
                 agent_text = font_medium.render(agent_info, True, agent.color)
                 canvas.blit(agent_text, (10, y_offset + i * 20))
             
