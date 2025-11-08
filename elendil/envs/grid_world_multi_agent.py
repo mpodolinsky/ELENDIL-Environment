@@ -1735,7 +1735,7 @@ class GridWorldEnvParallel(ParallelEnv):
                         break
             
             if reached_target:
-                reward += -5.0 * self.lambda_fov  # Penalty for reaching target
+                reward += -1.0 * self.lambda_fov  # Penalty for reaching target
             else:
                 # Check if this agent detects any target (only for agents with FOV)
                 agent_detects = False
@@ -2552,6 +2552,7 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
         
         # Goal settings
         goal_color: Tuple[int, int, int] = (0, 255, 0),  # Green by default
+        goal_approach_reward_scale: float = 0.05,
 
     ):
         # Call parent __init__ but we'll override observation spaces
@@ -2576,6 +2577,8 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
         # Static goal location (will be set in reset)
         self.goal_location: np.ndarray = np.array([-1, -1], dtype=int)
         self.goal_color = goal_color
+        self.goal_approach_reward_scale = float(goal_approach_reward_scale)
+        self._prev_distance_to_goal: Dict[str, Optional[float]] = {}
         
         # Update observation spaces to include goal instead of target
         for agent_name in self.possible_agents:
@@ -2652,6 +2655,11 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
                     agent_obj.location - self.goal_location, ord=1
                 )
         
+        # Initialize distance tracking for goal-approach shaping rewards
+        self._prev_distance_to_goal = {}
+        for agent in self.agent_list:
+            self._prev_distance_to_goal[agent.name] = self._distance_to_goal(agent)
+
         return observations, infos
 
     def step(self, actions: Dict[str, int]):
@@ -2668,6 +2676,20 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
         # Call parent step but we'll modify rewards and observations
         observations, rewards, terminations, truncations, infos = super().step(actions)
         
+        # Dense shaping reward based on change in distance to the goal
+        if self.goal_approach_reward_scale != 0.0 and self.goal_location[0] >= 0:
+            for agent_name in rewards.keys():
+                agent_obj = self._agents_by_name.get(agent_name)
+                if agent_obj is None:
+                    continue
+                current_distance = self._distance_to_goal(agent_obj)
+                previous_distance = self._prev_distance_to_goal.get(agent_name)
+                if previous_distance is not None and current_distance is not None:
+                    delta = previous_distance - current_distance
+                    if delta != 0:
+                        rewards[agent_name] += self.goal_approach_reward_scale * delta
+                self._prev_distance_to_goal[agent_name] = current_distance
+        
         # Modify rewards: check if agents reached the goal
         for agent_name in self.agents:
             if agent_name in self._agents_by_name:
@@ -2678,7 +2700,7 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
                 
                 if reached_goal:
                     # Reward +5 for reaching goal
-                    rewards[agent_name] += 5.0
+                    rewards[agent_name] += 20.0
                 
                 # Agent terminates if: reached_goal OR caught by target (death_on_sight)
                 # Parent step already handles termination when caught by target
@@ -2707,6 +2729,14 @@ class GridWorldEnvParallelExploration(GridWorldEnvParallel):
                 obs['goal'] = self.goal_location.copy()
         
         return observations, rewards, terminations, truncations, infos
+
+    def _distance_to_goal(self, agent: 'Agent') -> Optional[float]:
+        """Compute the Manhattan distance from an agent to the static goal."""
+        if agent is None or self.goal_location is None:
+            return None
+        if np.any(self.goal_location < 0):
+            return None
+        return float(np.linalg.norm(agent.location - self.goal_location, ord=1))
 
     def observe(self, agent: str):
         '''
