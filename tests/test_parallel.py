@@ -81,40 +81,25 @@ if __name__ == "__main__":
         air_observer_config
     ]
 
-    size = int(15)
-    record = False
+    size = int(10)
 
-    # Ensure video folder exists
-    os.makedirs("./videos", exist_ok=True)
-
-    if record:
-        os.environ["SDL_VIDEODRIVER"] = "dummy"
-        render_mode = "rgb_array"
-    else:
-        render_mode = "human"
+    render_mode = "human"
 
     env = GridWorldEnvParallel(render_mode=render_mode,
     size=size,
     agents=agent_configs,  # Pass configs - agents will be auto-instantiated!
-    no_target=True,
+    no_target=False,
     enable_obstacles=True,
-    num_obstacles=3,
-    num_visual_obstacles=3,  # Visual obstacles for ObserverAgent (block view but not movement)
+    target_velocity=True,
+    num_obstacles=0,
+    num_visual_obstacles=0,  # Visual obstacles for ObserverAgent (block view but not movement)
     show_fov_display=True,
     target_config=target_config,
     max_steps=500,
     lambda_fov=0.5,
     goal_enabled=True,
-    death_on_sight=True)
-
-    if record: 
-        # Wrap with RecordVideo (requires rgb_array render_mode)
-        env = RecordVideo(
-            env,
-            video_folder="./videos",
-            name_prefix="multi_agent_parallel_run",
-            episode_trigger=lambda ep_id: True,  # record every episode
-        )
+    death_on_sight=True,
+    show_target_coords=False)
 
     observations, infos = env.reset()
     
@@ -145,7 +130,13 @@ if __name__ == "__main__":
         
         # Step all agents simultaneously
         observations, rewards, terminations, truncations, infos = env.step(actions)
-        
+
+        print(f"Observations: {observations}")
+        print(f"Rewards: {rewards}")
+        print(f"Terminations: {terminations}")
+        print(f"Truncations: {truncations}")
+        print(f"Infos: {infos}")
+
         # Print step information
         print(f"Step {step_idx}:")
         for agent in env.agents:
@@ -159,7 +150,7 @@ if __name__ == "__main__":
         if step_idx >= 100:  # Limit for demo
             break
             
-        time.sleep(0.5)  # Uncomment to slow down for observation
+        # time.sleep(0.5)  # Uncomment to slow down for observation
 
     env.close()
     print("\nParallel episode completed!")

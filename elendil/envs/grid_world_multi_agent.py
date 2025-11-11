@@ -85,6 +85,7 @@ class GridWorldEnvParallel(ParallelEnv):
         show_target_coords: bool = False,
         obstacle_collision_penalty: float = -0.05,
         death_on_sight: bool = True,
+        target_velocity: bool = False,
 
         # Agents and target settings
         no_target=False,
@@ -120,7 +121,7 @@ class GridWorldEnvParallel(ParallelEnv):
         self.goal_color = tuple(goal_color)
         self.goal_location = np.array([-1, -1], dtype=int)
         self._prev_distance_to_goal: Dict[str, Optional[float]] = {}
-        
+        self.target_velocity = bool(target_velocity)
         # Parallel environment state
         self._step_count = 0
         self.max_steps = max_steps
@@ -217,8 +218,7 @@ class GridWorldEnvParallel(ParallelEnv):
         self.observation_spaces = {}
         for agent_name, raw_space in initial_observation_spaces.items():
             self._set_observation_space(agent_name, raw_space)
-        if self.goal_enabled:
-            self._update_observation_spaces_for_goal()
+        self._update_observation_spaces_with_extras()
 
         # Target location
         self._target_location = np.array([-1, -1], dtype=int)
@@ -245,6 +245,9 @@ class GridWorldEnvParallel(ParallelEnv):
             self._visit_counts: Dict[str, np.ndarray] = {a.name: np.zeros((self.size, self.size), dtype=int) for a in self.agent_list}
 
         # Initialize targets (support single or multiple targets)
+        self._target_velocities: Dict[str, np.ndarray] = {}
+        self._target_previous_positions: Dict[str, np.ndarray] = {}
+
         if not self.no_target:
             self.targets: List[Target] = []
             
@@ -298,21 +301,38 @@ class GridWorldEnvParallel(ParallelEnv):
         self._raw_observation_spaces[agent_name] = raw_space
         self.observation_spaces[agent_name] = flatten_space(raw_space)
 
-    def _update_observation_spaces_for_goal(self) -> None:
+    def _update_observation_spaces_with_extras(self) -> None:
         for agent_name in list(self._raw_observation_spaces.keys()):
             raw_space = self._raw_observation_spaces[agent_name]
             if not isinstance(raw_space, spaces.Dict):
                 continue
             space_dict = raw_space.spaces.copy()
-            if "goal" in space_dict:
-                continue
-            space_dict["goal"] = spaces.Box(
-                low=0,
-                high=self.size - 1,
-                shape=(2,),
-                dtype=np.int32,
-            )
-            self._set_observation_space(agent_name, spaces.Dict(space_dict))
+            updated = False
+            if "flight_level" in space_dict:
+                if "target" in space_dict:
+                    space_dict.pop("target")
+                    updated = True
+                if "targets" in space_dict:
+                    space_dict.pop("targets")
+                    updated = True
+            if self.goal_enabled and "goal" not in space_dict:
+                space_dict["goal"] = spaces.Box(
+                    low=0,
+                    high=self.size - 1,
+                    shape=(2,),
+                    dtype=np.int32,
+                )
+                updated = True
+            if "target_velocity" not in space_dict and self.target_velocity:
+                space_dict["target_velocity"] = spaces.Box(
+                    low=-self.size,
+                    high=self.size,
+                    shape=(2,),
+                    dtype=np.int32,
+                )
+                updated = True
+            if updated:
+                self._set_observation_space(agent_name, spaces.Dict(space_dict))
 
     def _reset_goal(self) -> None:
         if not self.goal_enabled:
@@ -354,6 +374,14 @@ class GridWorldEnvParallel(ParallelEnv):
         if agent is None:
             return None
         return float(np.linalg.norm(agent.location - self.goal_location, ord=1))
+
+    def _get_primary_target_velocity(self) -> np.ndarray:
+        if self.targets:
+            primary = self.targets[0]
+            velocity = self._target_velocities.get(primary.name)
+            if velocity is not None:
+                return velocity.astype(np.int32)
+        return np.zeros(2, dtype=np.int32)
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         '''
@@ -413,6 +441,12 @@ class GridWorldEnvParallel(ParallelEnv):
             
             # For backward compatibility, keep self.target pointing to first target
             self.target = self.targets[0] if self.targets else None
+
+        self._target_previous_positions = {}
+        self._target_velocities = {}
+        for target in self.targets:
+            self._target_previous_positions[target.name] = target.location.copy()
+            self._target_velocities[target.name] = np.zeros(2, dtype=np.int32)
 
         self._reset_goal()
 
@@ -479,12 +513,6 @@ class GridWorldEnvParallel(ParallelEnv):
         self._clear_screen_and_show_step()
 
         # Prepare environment state for agent steps
-        goal_loc = getattr(self, "goal_location", None)
-        if isinstance(goal_loc, np.ndarray):
-            goal_loc = goal_loc.copy()
-        goal_loc = getattr(self, "goal_location", None)
-        if isinstance(goal_loc, np.ndarray):
-            goal_loc = goal_loc.copy()
         env_state = {
             "agents": self.agent_list,
             "target": self.target,  # For backward compatibility
@@ -492,9 +520,7 @@ class GridWorldEnvParallel(ParallelEnv):
             "obstacles": self._obstacles,
             "visual_obstacles": self._visual_obstacles,
             "grid_size": self.size,
-            "goal_location": goal_loc,
-            "grid_size": self.size,
-            "goal_location": goal_loc,
+            "goal_location": self.goal_location.copy()
         }
 
         # Process all agent actions simultaneously
@@ -554,7 +580,6 @@ class GridWorldEnvParallel(ParallelEnv):
             
             # Calculate individual reward for this agent
             reward = 0.0
-            reached_goal = self.goal_enabled and np.array_equal(agent_obj.location, self.goal_location)
             reached_goal = self.goal_enabled and np.array_equal(agent_obj.location, self.goal_location)
             
             # Apply obstacle collision penalty if agent hit an obstacle
@@ -647,11 +672,6 @@ class GridWorldEnvParallel(ParallelEnv):
                 or reached_goal
                 or (self.death_on_sight and detected_by_target)
             )
-            terminated = (
-                reached_target
-                or reached_goal
-                or (self.death_on_sight and detected_by_target)
-            )
             terminations[agent_name] = terminated
             truncations[agent_name] = self.step_counter >= self.max_steps
             
@@ -659,8 +679,18 @@ class GridWorldEnvParallel(ParallelEnv):
             self.terminations[agent_name] = terminated
 
         # NOW move all targets (after all rewards calculated)
+        prev_target_positions = {
+            target.name: target.location.copy()
+            for target in self.targets
+        }
         for target in self.targets:
             target.step(self.step_counter, self._obstacles, self._is_cell_obstacle)
+            prev_loc = prev_target_positions.get(target.name)
+            if prev_loc is None:
+                prev_loc = target.location.copy()
+            velocity = target.location.astype(int) - prev_loc.astype(int)
+            self._target_velocities[target.name] = velocity.astype(np.int32)
+            self._target_previous_positions[target.name] = target.location.copy()
 
         # Generate observations and infos for all agents
         observations = {}
@@ -700,17 +730,12 @@ class GridWorldEnvParallel(ParallelEnv):
         goal_loc = getattr(self, "goal_location", None)
         if isinstance(goal_loc, np.ndarray):
             goal_loc = goal_loc.copy()
-        goal_loc = getattr(self, "goal_location", None)
-        if isinstance(goal_loc, np.ndarray):
-            goal_loc = goal_loc.copy()
         env_state = {
             "agents": self.agent_list,
             "target": self.target,  # For backward compatibility
             "targets": self.targets,  # New: list of all targets
             "obstacles": self._obstacles,
             "visual_obstacles": self._visual_obstacles,
-            "grid_size": self.size,
-            "goal_location": goal_loc,
             "grid_size": self.size,
             "goal_location": goal_loc,
         }
@@ -738,9 +763,21 @@ class GridWorldEnvParallel(ParallelEnv):
 
         if isinstance(obs, dict):
             obs = dict(obs)
+            if isinstance(agent_obj, ObserverAgent):
+                obs.pop("target", None)
+                obs.pop("targets", None)
             raw_space = self._raw_observation_spaces.get(agent)
             if self.goal_enabled and isinstance(raw_space, spaces.Dict) and "goal" in raw_space.spaces:
                 obs["goal"] = self.goal_location.copy()
+            if isinstance(raw_space, spaces.Dict) and "target_velocity" in raw_space.spaces:
+                target_visible = False
+                if "obstacles_fov" in obs:
+                    fov_map = np.array(obs["obstacles_fov"])
+                    target_visible = np.any(fov_map == 3)
+                if target_visible:
+                    obs["target_velocity"] = self._get_primary_target_velocity()
+                else:
+                    obs["target_velocity"] = np.zeros(2, dtype=np.int32)
 
         raw_space = self._raw_observation_spaces.get(agent)
         if raw_space is None:
@@ -869,12 +906,12 @@ class GridWorldEnvParallel(ParallelEnv):
                 
                 # Check if any target is at this position
                 target_present = False
-                if not self._goal_hide_targets:
-                    for target in self.targets:
-                        if target.location[0] == x_int and target.location[1] == y_int:
-                            fov_map[fov_i, fov_j] = 3  # Mark target as 3
-                            target_present = True
-                            break
+
+                for target in self.targets:
+                    if target.location[0] == x_int and target.location[1] == y_int:
+                        fov_map[fov_i, fov_j] = 3  # Mark target as 3
+                        target_present = True
+                        break
                 
                 # Check if another agent is at this position (only if no target)
                 if not target_present:
@@ -952,7 +989,7 @@ class GridWorldEnvParallel(ParallelEnv):
         if not self.show_fov_display:
             return
             
-        print("\033[2J\033[H", end="")  # Clear screen and move cursor to top
+        # print("\033[2J\033[H", end="")  # Clear screen and move cursor to top
         print("="*80)
         print(f"PARALLEL STEP {self._step_count}".center(80))
         print("="*80)

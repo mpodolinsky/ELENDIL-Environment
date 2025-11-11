@@ -266,21 +266,6 @@ class ObserverAgent(BaseAgent):
                     fov_map[i, j] = 1  # Boundary obstacle
                     continue
                 
-                # Check for target with flight level-based detection probability
-                if (env_state.get("target") is not None and
-                    env_state["target"].location[0] == world_x and
-                    env_state["target"].location[1] == world_y):
-                    
-                    # Flight level-based target detection probability
-                    # Use altitude - 1 to index into target_detection_probs (0-indexed)
-                    if self.altitude >= 1 and self.altitude <= 3:
-                        detection_prob = self.target_detection_probs[self.altitude - 1]
-                        if np.random.random() < detection_prob:
-                            fov_map[i, j] = 3  # Target detected
-                        else:
-                            fov_map[i, j] = 0  # Target missed (shows as empty)
-                    continue
-                
                 # Check for exploration goal before visual obstacle masking
                 goal_location = env_state.get("goal_location")
                 if goal_location is not None:
