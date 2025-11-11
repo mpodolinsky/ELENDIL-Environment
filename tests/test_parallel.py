@@ -15,7 +15,9 @@ if __name__ == "__main__":
     import os
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ground_agent_config_path = os.path.join(base_dir, "configs", "agent_configs", "ground_agent.yaml")
-    air_observer_config_path = os.path.join(base_dir, "configs", "agent_configs", "air_observer_agent.yaml")
+    air_observer_config_path_1 = os.path.join(base_dir, "configs", "agent_configs", "air_observer_agent_1.yaml")
+    air_observer_config_path_2 = os.path.join(base_dir, "configs", "agent_configs", "air_observer_agent_2.yaml")
+    air_observer_config_path_3 = os.path.join(base_dir, "configs", "agent_configs", "air_observer_agent_3.yaml")
     target_config_path = os.path.join(base_dir, "configs", "target_configs", "target_config.yaml")
 
     # Load target configuration(s)
@@ -71,17 +73,25 @@ if __name__ == "__main__":
     with open(ground_agent_config_path, "r") as f:
         ground_agent_config = yaml.safe_load(f)
 
-    with open(air_observer_config_path, "r") as f:
-        air_observer_config = yaml.safe_load(f)
+    with open(air_observer_config_path_1, "r") as f:
+        air_observer_config_1 = yaml.safe_load(f)
+
+    with open(air_observer_config_path_2, "r") as f:
+        air_observer_config_2 = yaml.safe_load(f)
+
+    with open(air_observer_config_path_3, "r") as f:
+        air_observer_config_3 = yaml.safe_load(f)
     
     # Create list of agent configurations
     # The environment will automatically instantiate agents from these configs!
     agent_configs = [
         ground_agent_config,
-        air_observer_config
+        air_observer_config_1,
+        air_observer_config_2,
+        air_observer_config_3,
     ]
 
-    size = int(10)
+    size = int(15)
 
     render_mode = "human"
 
@@ -99,7 +109,8 @@ if __name__ == "__main__":
     lambda_fov=0.5,
     goal_enabled=True,
     death_on_sight=True,
-    show_target_coords=False)
+    show_target_coords=False,
+    shared_target_coords=True)
 
     observations, infos = env.reset()
     

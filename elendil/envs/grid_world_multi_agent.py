@@ -86,6 +86,7 @@ class GridWorldEnvParallel(ParallelEnv):
         obstacle_collision_penalty: float = -0.05,
         death_on_sight: bool = True,
         target_velocity: bool = False,
+        shared_target_coords: bool = False,
 
         # Agents and target settings
         no_target=False,
@@ -119,9 +120,13 @@ class GridWorldEnvParallel(ParallelEnv):
         self.goal_reward = float(goal_reward)
         self.goal_approach_reward_scale = float(goal_approach_reward_scale)
         self.goal_color = tuple(goal_color)
+        self.target_velocity = bool(target_velocity)
+        self.shared_target_coords = bool(shared_target_coords)
         self.goal_location = np.array([-1, -1], dtype=int)
         self._prev_distance_to_goal: Dict[str, Optional[float]] = {}
-        self.target_velocity = bool(target_velocity)
+        self._shared_target_coords = (
+            np.full(2, -1, dtype=np.int32) if self.shared_target_coords else None
+        )
         # Parallel environment state
         self._step_count = 0
         self.max_steps = max_steps
@@ -331,6 +336,18 @@ class GridWorldEnvParallel(ParallelEnv):
                     dtype=np.int32,
                 )
                 updated = True
+            if self.shared_target_coords:
+                if "shared_target" not in space_dict:
+                    space_dict["shared_target"] = spaces.Box(
+                        low=-1,
+                        high=self.size - 1,
+                        shape=(2,),
+                        dtype=np.int32,
+                    )
+                    updated = True
+            elif "shared_target" in space_dict:
+                space_dict.pop("shared_target")
+                updated = True
             if updated:
                 self._set_observation_space(agent_name, spaces.Dict(space_dict))
 
@@ -450,7 +467,8 @@ class GridWorldEnvParallel(ParallelEnv):
 
         self._reset_goal()
 
-        self._reset_goal()
+        if self.shared_target_coords:
+            self._shared_target_coords = np.full(2, -1, dtype=np.int32)
 
         if self.intrinsic: # Counting visits to cells if intrinsic exploration is enabled
             for a in self.agent_list:
@@ -574,6 +592,7 @@ class GridWorldEnvParallel(ParallelEnv):
         # Update detection state for visual indicators
         self._agent_detects_target = {}
         self._target_detects_agent = {}
+        any_agent_detected = False
         
         for agent_name in self.agents:
             agent_obj = self._agents_by_name[agent_name]
@@ -625,6 +644,8 @@ class GridWorldEnvParallel(ParallelEnv):
                 else:
                     # Small step penalty if no detection
                     reward += -0.01
+                if self.shared_target_coords and agent_detects:
+                    any_agent_detected = True
 
             # Intrinsic exploration rewards (if enabled)
             if self.intrinsic:
@@ -678,6 +699,14 @@ class GridWorldEnvParallel(ParallelEnv):
             # Store termination status for rendering
             self.terminations[agent_name] = terminated
 
+        if self.shared_target_coords:
+            if any_agent_detected and not self.no_target and self.target is not None:
+                shared_target_next = self.target.location.astype(np.int32)
+            else:
+                shared_target_next = np.full(2, -1, dtype=np.int32)
+        else:
+            shared_target_next = None
+
         # NOW move all targets (after all rewards calculated)
         prev_target_positions = {
             target.name: target.location.copy()
@@ -699,6 +728,9 @@ class GridWorldEnvParallel(ParallelEnv):
         for agent_name in self.agents:
             observations[agent_name] = self.observe(agent_name)
             infos[agent_name] = self._get_agent_info(agent_name)
+
+        if self.shared_target_coords:
+            self._shared_target_coords = shared_target_next
 
         # Remove terminated/truncated agents from active agents list
         self.agents = [
@@ -778,6 +810,13 @@ class GridWorldEnvParallel(ParallelEnv):
                     obs["target_velocity"] = self._get_primary_target_velocity()
                 else:
                     obs["target_velocity"] = np.zeros(2, dtype=np.int32)
+            if isinstance(raw_space, spaces.Dict) and "shared_target" in raw_space.spaces:
+                coords = (
+                    self._shared_target_coords
+                    if self._shared_target_coords is not None
+                    else np.full(2, -1, dtype=np.int32)
+                )
+                obs["shared_target"] = coords.copy()
 
         raw_space = self._raw_observation_spaces.get(agent)
         if raw_space is None:
